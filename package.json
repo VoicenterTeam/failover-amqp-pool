@@ -1,0 +1,24 @@
+{
+  "name": "@voicenter-team/failover-amqp-pool",
+  "version": "1.0.2",
+  "description": "amqp pool client",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/VoicenterTeam/failover-amqp-pool.git"
+  },
+  "keywords": [
+    "amqp",
+    "pool",
+    "client"
+  ],
+  "author": "Maksym Kyrylov",
+  "license": "MIT",
+  "homepage": "https://github.com/VoicenterTeam/failover-amqp-pool",
+  "dependencies": {
+    "amqplib": "^0.6.0"
+  }
+}
