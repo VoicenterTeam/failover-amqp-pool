@@ -50,7 +50,7 @@ class AmqpPool extends EventEmitter {
     if (this.currentChannel) {
       let config = this._getCurrentConfig();
       let msg = Buffer.from(message);
-      if (config.channel.hasOwnProperty('queue_name')) {
+      if (config.channel.hasOwnProperty('queue_name') && config.channel.queue_name !== false) {
         this.currentChannel.sendToQueue(config.channel.queue_name, msg);
       } else if (config.channel.hasOwnProperty('exchange_name')) {
         this.currentChannel.publish(config.channel.exchange_name, config.channel.topic || '', msg, config.channel.options || {});
