@@ -170,17 +170,20 @@ class AmqpPool extends EventEmitter {
       })
       .then((channel) => {
         let config = this._getCurrentConfig();
-        return channel.assertQueue(config.channel.queue_name || '', {exclusive: false, durable: true, noAck: !config.channel.prefetch})
-          .then((assertion) => {
-            if (config.channel.hasOwnProperty('exchange_name')) {
-              return channel.bindQueue(assertion.queue, config.channel.exchange_name, config.channel.topic || '', config.channel.options || {})
-                .then(() => {
-                  this.currentConfig.channel.queue_name = assertion.queue;
-                  return channel;
-                });
-            }
-            return channel;
-          });
+        if (config.channel.queue_name !== false) {
+          return channel.assertQueue(config.channel.queue_name || '', {exclusive: false, durable: true, noAck: !config.channel.prefetch})
+            .then((assertion) => {
+              if (config.channel.hasOwnProperty('exchange_name')) {
+                return channel.bindQueue(assertion.queue, config.channel.exchange_name, config.channel.topic || '', config.channel.options || {})
+                  .then(() => {
+                    this.currentConfig.channel.queue_name = assertion.queue;
+                    return channel;
+                  });
+              }
+              return channel;
+            });
+        }
+        return channel;
       })
       .then((channel) => {
         let config = this._getCurrentConfig();
