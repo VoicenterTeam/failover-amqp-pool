@@ -18,7 +18,9 @@ amqp pool client
       "exchange_name": "TestExchange",
       "queue_name": "TestQueue",
       "prefetch": 5,
-      "exchange_type": "fanout"
+      "exchange_type": "fanout",
+      "topic": "",
+      "options": {}
     }
   },
   {
@@ -35,7 +37,9 @@ amqp pool client
       "exchange_name": "TestExchange",
       "queue_name": "TestQueue",
       "prefetch": 5,
-      "exchange_type": "fanout"
+      "exchange_type": "fanout",
+      "topic": "",
+      "options": {}
     }
   },
   {
@@ -52,7 +56,9 @@ amqp pool client
       "exchange_name": "TestExchange",
       "queue_name": "TestQueue",
       "prefetch": 5,
-      "exchange_type": "fanout"
+      "exchange_type": "fanout",
+      "topic": "",
+      "options": {}
     }
   },
   {
@@ -70,7 +76,9 @@ amqp pool client
       "exchange_name": "TestExchange",
       "queue_name": "TestQueue",
       "prefetch": 5,
-      "exchange_type": "fanout"
+      "exchange_type": "fanout",
+      "topic": "",
+      "options": {}
     }
   }
 ]
