@@ -2,24 +2,26 @@ const amqplib = require('amqplib');
 const EventEmitter = require('events').EventEmitter;
 
 class AmqpPool extends EventEmitter {
-  pool = [];
-  currentIndex = 0;
-  currentConfig = null;
-  currentConnection = false;
-  currentChannel = false;
-
   constructor(config) {
     super();
+
+    this.configPool = [];
+    this.msgPool = [];
+    this.currentConfigIndex = 0;
+    this.currentConfig = null;
+    this.currentConnection = false;
+    this.currentChannel = false;
+
     if (config instanceof Array) {
-      this.pool = config;
+      this.configPool = config;
     } else {
-      this.pool = [config];
+      this.configPool = [config];
     }
   }
 
   connect() {
     setTimeout(() => {
-      if (this.pool.length > 0) {
+      if (this.configPool.length > 0) {
         let config = this._getCurrentConfig();
         if (config && config.hasOwnProperty('connection')) {
           return this._startConnection()
@@ -36,34 +38,59 @@ class AmqpPool extends EventEmitter {
     return this.currentConnection.close();
   }
 
-  consume() {
+  consume(_r = false) {
     if (this.currentChannel) {
-      this.removeAllListeners('message');
+      if (!_r) {
+        this.removeAllListeners('message');
+      }
       let config = this._getCurrentConfig();
       this.currentChannel.consume(config.channel.queue_name, (m) => {
-        this.emit('message', m);
+        if (m == null) {
+          this.consume(1);
+        } else {
+          this.emit('message', m);
+        }
       });
     }
   }
 
-  publish(message) {
+  publish(message = null) {
+    console.log(this.msgPool);
+    message = message||this.msgPool.shift();
+    if (message) {
+      let config = this._getCurrentConfig();
+      if (config.channel.hasOwnProperty('exchange_name')) {
+        if (this.currentChannel) {
+          let msg = Buffer.from(message);
+          this.currentChannel.publish(config.channel.exchange_name, config.channel.topic || '', msg, config.channel.options || {});
+          this.publish();
+        }  else {
+          this.msgPool.push(message);
+        }
+      }
+    }
+  }
+
+  sendToQueue(message) {
     if (this.currentChannel) {
       let config = this._getCurrentConfig();
       let msg = Buffer.from(message);
-      if (config.channel.hasOwnProperty('queue_name') && config.channel.queue_name !== false) {
+      if (config.channel.hasOwnProperty('queue_name')) {
         this.currentChannel.sendToQueue(config.channel.queue_name, msg);
-      } else if (config.channel.hasOwnProperty('exchange_name')) {
-        this.currentChannel.publish(config.channel.exchange_name, config.channel.topic || '', msg, config.channel.options || {});
       }
     }
   }
 
   ack(m) {
-    this.currentChannel.ack(m);
+    if (this.currentChannel) {
+      this.currentChannel.ack(m);
+    }
   }
 
   nack(m) {
-    this.currentChannel.nack(m);
+    if (this.currentChannel) {
+      this.currentChannel.nack(m);
+    }
   }
 
   _tryRecover() {
@@ -73,19 +100,19 @@ class AmqpPool extends EventEmitter {
 
   _getCurrentConfig() {
     if (!this.currentConfig) {
-      this.currentConfig = this.pool[this.currentIndex];
+      this.currentConfig = this.configPool[this.currentConfigIndex];
     }
     return this.currentConfig;
   }
 
   _rotateConfig() {
-    this.currentIndex++;
-    if (this.pool.length > 0) {
-      if (this.currentIndex >= this.pool.length) {
-        this.currentIndex = 0;
+    this.currentConfigIndex++;
+    if (this.configPool.length > 0) {
+      if (this.currentConfigIndex >= this.configPool.length) {
+        this.currentConfigIndex = 0;
       }
-      this.currentConfig = this.pool[this.currentIndex];
-      return this.currentIndex;
+      this.currentConfig = this.configPool[this.currentConfigIndex];
+      return this.currentConfigIndex;
     }
     else {
       return false;
@@ -120,11 +147,11 @@ class AmqpPool extends EventEmitter {
           console.log('Close Connection');
           this.currentConnection = false;
           this.currentChannel = false;
-          // this._tryRecover();
+          this._tryRecover();
         });
         this.currentConnection = connection;
         return connection;
-      })
+      });
   }
 
   _startChannel(connection) {
@@ -138,7 +165,7 @@ class AmqpPool extends EventEmitter {
         channel.on('error', (e) => {
           console.log("Channel Error");
           console.log(e);
-        })
+        });
         channel.on('close', () => {
           console.log("Channel Close");
           this.close();
@@ -194,6 +221,7 @@ class AmqpPool extends EventEmitter {
       })
       .then((channel) => {
         console.log('emit channel');
+        this.publish();
         this.emit('channel', this);
         return channel;
       });
