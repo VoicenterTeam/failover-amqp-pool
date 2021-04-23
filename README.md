@@ -8,6 +8,11 @@ It is important to set correct `directives` to make pool all queues and exchange
 - aq - assert queue
 - qte - bind queue to exchange
 
+Publishing strategies:
+- "rr" - round robin (for all available channels)
+- "all" - to all available channels
+- function(msg, channels) {} - callback
+
 ### Consume
 config:
 ```json
@@ -114,16 +119,16 @@ let i = 0;
 let pool = new AMQPPool(cfg);
 pool.start();
 pool.on('ready', (_channel) => {
-  (function (channel) {
-    channel.on("message", (message) => {
-      setTimeout(() => {
-        console.log('<< '+message.content.toString() + " -> " + i);
-        channel.ack(message);
-        i++;
-      }, 500);
-    });
-    channel.consume();
-  })(_channel);
+    (function (channel) {
+        channel.on("message", (message) => {
+            setTimeout(() => {
+                console.log('<< '+message.content.toString() + " -> " + i);
+                channel.ack(message);
+                i++;
+            }, 500);
+        });
+        channel.consume();
+    })(_channel);
 });
 ```
 
@@ -215,11 +220,37 @@ let cfg = require('./config.json');
 const AMQPPool = require('./index');
 let i = 0;
 
-let pool = new AMQPPool(cfg);usage
+let pool = new AMQPPool(cfg);
 pool.start();
 
+// Publish a message rr with internal counter
 setInterval(() => {
-  pool.publish("Mesage-" + i, "rr");
-  i++;
+    pool.publish("Mesage-" + i, "rr");
+    i++;
 }, 1000);
+
+// Publish a message with a callback which implements rr
+setInterval(() => {
+    pool.publish("Mesage-" + i, function(msg, channels) {
+        if (channels.length > 0 ) {
+            if(rr_i >= channels.length) {
+              rr_i = 0;
+            }
+            console.log(channels[rr_i].exchange)
+            channels[rr_i++].publish(msg);
+        }
+    });
+    i++;
+}, 1000);
+
+// Publish a message to all available channels
+pool.on('ready', (_channel) => {
+    (function(channel) {
+        setInterval(() => {
+            channel.publish("Mesage-" + i, "all");
+            console.log("Mesage-" + i);
+            i++;
+        }, 1000);
+    })(_channel);
+});
 ```
