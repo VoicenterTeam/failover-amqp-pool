@@ -99,7 +99,6 @@ class Channel extends EventEmitter {
           this.republish();
           this.reack();
           this.removeAllListeners('message');
-          this.connection.addChannel(this);
           this.emit('ready', this);
           return true;
         })

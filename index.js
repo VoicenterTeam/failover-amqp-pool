@@ -34,12 +34,19 @@ class AMQPPool extends EventEmitter {
 
     this.config = _parsConfig(rawConfig);
     this.connections = [];
+    this.msgCache= [];
 
     // round_robin
     this.rr_i = 0;
   }
 
   start() {
+    setInterval(() => {
+      if (this.msgCache.length > 0 && this.getAllChannels().length > 0) {
+        let m = this.msgCache.shift();
+        this.publish(m.msg, m.filter);
+      }
+    }, 500);
     for (let _url in this.config) {
       ((url) => {
         let connection = new Connection(url);
@@ -52,10 +59,10 @@ class AMQPPool extends EventEmitter {
           channel.on('message', (msg) => {
             this.emit('message', msg);
           });
+          connection.addChannel(channel);
         }
         connection.on('close', () => {
           console.log('close ' + url);
-          this.connections.splice(this.connections.indexOf(connection), 1);
           setTimeout(() => {
             connection.start();
           }, 500);
@@ -75,13 +82,19 @@ class AMQPPool extends EventEmitter {
         if(this.rr_i >= channels.length) {
           this.rr_i = 0;
         }
-        console.log(channels[this.rr_i].exchange);
+        console.log(this.rr_i);
         channels[this.rr_i++].publish(msg);
+      } else {
+        this.msgCache.push({msg, filter});
       }
     } else if (filter === 'all') {
-      for (let channelIndex in channels) {
-        console.log(channels[channelIndex].exchange);
-        channels[channelIndex].publish(msg);
+      if (channels.length > 0) {
+        for (let channelIndex in channels) {
+          console.log(channels[channelIndex].exchange);
+          channels[channelIndex].publish(msg);
+        }
+      } else {
+        this.msgCache.push({msg, filter});
       }
     }
   }
