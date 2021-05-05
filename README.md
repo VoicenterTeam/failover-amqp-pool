@@ -230,15 +230,13 @@ setInterval(() => {
 }, 1000);
 
 // Publish a message with a callback which implements rr
+let rr_i = 0;
 setInterval(() => {
-    pool.publish("Mesage-" + i, function(msg, channels) {
-        if (channels.length > 0 ) {
-            if(rr_i >= channels.length) {
-              rr_i = 0;
-            }
-            console.log(channels[rr_i].exchange)
-            channels[rr_i++].publish(msg);
+    pool.publish("Mesage-" + i, function(channels) {
+        if(rr_i >= channels.length) {
+          rr_i = 0;
         }
+        return channels[rr_i++];
     });
     i++;
 }, 1000);

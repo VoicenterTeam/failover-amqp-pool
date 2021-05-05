@@ -75,8 +75,11 @@ class AMQPPool extends EventEmitter {
   publish(msg, filter) {
     let channels = this.getAllChannels();
     if (typeof filter == 'function') {
-      // console.log(this.connections);
-      filter.call(this, msg, channels);
+      let filteredChannels = filter(channels);
+      for (let channelIndex in filteredChannels) {
+        console.log(filteredChannels[channelIndex].exchange);
+        filteredChannels[channelIndex].publish(msg);
+      }
     } else if (filter === 'rr') {
       if (channels.length > 0 ) {
         if(this.rr_i >= channels.length) {
