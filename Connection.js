@@ -3,9 +3,10 @@ const Channel = require('./Channel');
 const EventEmitter = require('events').EventEmitter;
 
 class Connection extends EventEmitter {
-  constructor(url) {
+  constructor(url, config) {
     super();
     this.url = url;
+    this.config = config;
     this.channels = [];
     this.amqpConnection = null;
     this.alive = false;

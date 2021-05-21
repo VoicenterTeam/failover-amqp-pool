@@ -2,8 +2,11 @@ function _parsConfig (rawConfig) {
   let parsedConfig = {};
   for (let item in rawConfig) {
     let url = _buildUrl(rawConfig[item].connection);
-    parsedConfig[url] = (parsedConfig.hasOwnProperty(url)) ? parsedConfig[url] : [];
-    parsedConfig[url].push(rawConfig[item].channel);
+    parsedConfig[url] = (parsedConfig.hasOwnProperty(url)) ? parsedConfig[url] : {};
+
+    parsedConfig[url].channels = (parsedConfig[url].hasOwnProperty('channels')) ? parsedConfig[url].channels : [];
+    parsedConfig[url].channels.push(rawConfig[item].channel);
+    parsedConfig[url].config = rawConfig[item].connection;
   }
   // console.log(parsedConfig)
   return parsedConfig;
@@ -49,10 +52,11 @@ class AMQPPool extends EventEmitter {
     }, 500);
     for (let _url in this.config) {
       ((url) => {
-        let connection = new Connection(url);
+        console.log(this.config[url].config)
+        let connection = new Connection(url, this.config[url].config);
         this.connections.push(connection);
-        for (let channelConfigIndex in this.config[url]) {
-          let channel = new Channel(connection, this.config[url][channelConfigIndex]);
+        for (let channelConfigIndex in this.config[url].channels) {
+          let channel = new Channel(connection, this.config[url].channels[channelConfigIndex]);
           channel.on('ready', (channel) => {
             this.emit('ready', channel);
           });
