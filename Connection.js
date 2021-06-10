@@ -35,6 +35,7 @@ class Connection extends EventEmitter {
         })
         .catch((error) => {
           this.alive = false;
+          console.log(error)
           console.log("Failed to setup connection");
           setTimeout(() => {
             this.start();

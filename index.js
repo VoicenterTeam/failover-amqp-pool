@@ -45,14 +45,13 @@ class AMQPPool extends EventEmitter {
 
   start() {
     setInterval(() => {
-      if (this.msgCache.length > 0 && this.getAllChannels().length > 0) {
+      if (this.msgCache.length > 0 && this.getAliveChannels().length > 0) {
         let m = this.msgCache.shift();
         this.publish(m.msg, m.filter);
       }
     }, 500);
     for (let _url in this.config) {
       ((url) => {
-        console.log(this.config[url].config)
         let connection = new Connection(url, this.config[url].config);
         this.connections.push(connection);
         for (let channelConfigIndex in this.config[url].channels) {
@@ -77,11 +76,10 @@ class AMQPPool extends EventEmitter {
   }
 
   publish(msg, filter) {
-    let channels = this.getAllChannels();
+    let channels = this.getAliveChannels();
     if (typeof filter == 'function') {
       let filteredChannels = filter(channels);
       for (let channelIndex in filteredChannels) {
-        console.log(filteredChannels[channelIndex].exchange);
         filteredChannels[channelIndex].publish(msg);
       }
     } else if (filter === 'rr') {
@@ -97,7 +95,6 @@ class AMQPPool extends EventEmitter {
     } else if (filter === 'all') {
       if (channels.length > 0) {
         for (let channelIndex in channels) {
-          console.log(channels[channelIndex].exchange);
           channels[channelIndex].publish(msg);
         }
       } else {
@@ -106,7 +103,13 @@ class AMQPPool extends EventEmitter {
     }
   }
 
-  getAllChannels() {
+  ack(msg) {
+    this.getChannelById(msg.properties.channelId).map((channel) => {
+      channel.ack(msg);
+    });
+  }
+
+  getAliveChannels() {
     let channels = [];
     for (let connectionIndex in this.connections) {
       if (this.connections[connectionIndex].alive) {
@@ -114,6 +117,28 @@ class AMQPPool extends EventEmitter {
           if (this.connections[connectionIndex].channels[channelIndex].alive) {
             channels.push(this.connections[connectionIndex].channels[channelIndex]);
           }
+        }
+      }
+    }
+    return channels;
+  }
+
+  getAllChannels() {
+    let channels = [];
+    for (let connectionIndex in this.connections) {
+      for (let channelIndex in this.connections[connectionIndex].channels) {
+        channels.push(this.connections[connectionIndex].channels[channelIndex]);
+      }
+    }
+    return channels;
+  }
+
+  getChannelById(id) {
+    let channels = [];
+    for (let connectionIndex in this.connections) {
+      for (let channelIndex in this.connections[connectionIndex].channels) {
+        if (this.connections[connectionIndex].channels[channelIndex]._id === id) {
+          channels.push(this.connections[connectionIndex].channels[channelIndex]);
         }
       }
     }

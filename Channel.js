@@ -1,9 +1,11 @@
-const EventEmitter = require('events').EventEmitter;
+const EventEmitter = require('events').EventEmitter,
+      shortId = require('shortid');
 
 class Channel extends EventEmitter {
   constructor(connection, channelConfig) {
     super();
 
+    this._id = shortId();
     this.connection = connection;
     this.amqpChannel = null;
     this.directives = ["ea", "qa"];
@@ -49,7 +51,6 @@ class Channel extends EventEmitter {
       this.connection.amqpConnection.createConfirmChannel()
         .then((amqpChannel) => {
           this.amqpChannel = amqpChannel;
-          this.alive = true;
           this.amqpChannel.on('close', () => {
             this.alive = false;
             console.log('Channel closes');
@@ -60,6 +61,7 @@ class Channel extends EventEmitter {
           });
           this.amqpChannel.on('error', (e) => {
             this.alive = false;
+            console.log(e);
             console.log('Channel error');
             // setTimeout(() => {
             //   console.log("Channel retry");
@@ -77,6 +79,9 @@ class Channel extends EventEmitter {
           if (!!~this.directives.indexOf('ae') && this.exchange !== "") {
             return this.amqpChannel.assertExchange(this.exchange, this.exchange_type, {durable: true});
           }
+          if (this.hasOwnProperty('exchange') && this.exchange !== '') {
+            return this.amqpChannel.checkExchange(this.exchange);
+          }
           return true;
         })
         .then(() => {
@@ -86,6 +91,9 @@ class Channel extends EventEmitter {
                 this.queue = assertion.queue;
                 return true;
               });
+          }
+          if (this.hasOwnProperty('queue') && this.queue !== '') {
+            return this.amqpChannel.checkQueue(this.queue);
           }
           return true;
         })
@@ -99,14 +107,17 @@ class Channel extends EventEmitter {
           this.republish();
           this.reack();
           this.removeAllListeners('message');
+          this.alive = true;
           this.emit('ready', this);
           return true;
         })
         .catch((err) => {
+          console.log(err);
+          console.log("err");
           this.alive = false;
-          setTimeout(() => {
-            this.create();
-          }, 500);
+          // setTimeout(() => {
+          //   this.create();
+          // }, 500);
         });
     } else {
       console.log("Whoops my connection is dead!!!");
@@ -149,6 +160,7 @@ class Channel extends EventEmitter {
           this.create();
           console.log("Message is null");
         } else {
+          m.properties.channelId = this._id;
           this.emit('message', m);
         }
       });
