@@ -1,11 +1,11 @@
 const EventEmitter = require('events').EventEmitter,
-      shortId = require('shortid');
+      nanoId = require('nanoid');
 
 class Channel extends EventEmitter {
   constructor(connection, channelConfig) {
     super();
 
-    this._id = shortId();
+    this._id = nanoId();
     this.connection = connection;
     this.amqpChannel = null;
     this.directives = ["ea", "qa"];
