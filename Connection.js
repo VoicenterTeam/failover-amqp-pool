@@ -1,5 +1,4 @@
 const amqplib = require('amqplib');
-const Channel = require('./Channel');
 const EventEmitter = require('events').EventEmitter;
 
 class Connection extends EventEmitter {

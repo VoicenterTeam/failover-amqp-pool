@@ -16,7 +16,7 @@ class Channel extends EventEmitter {
     this.topic = "";
     this.options = {};
     this.alive = false;
-    this._cacheMsg = [];
+    // this._cacheMsg = [];
     this._cacheAck = [];
 
     if (channelConfig.hasOwnProperty('directives')) {
@@ -41,6 +41,8 @@ class Channel extends EventEmitter {
       this.options = channelConfig.options;
     }
 
+    this.options.mandatory = true;
+
     this.connection.on('connection', () => {
       this.create();
     })
@@ -50,6 +52,7 @@ class Channel extends EventEmitter {
     if (this.connection.alive) {
       this.connection.amqpConnection.createConfirmChannel()
         .then((amqpChannel) => {
+          amqpChannel.waitForConfirms();
           this.amqpChannel = amqpChannel;
           this.amqpChannel.on('close', () => {
             this.alive = false;
@@ -104,7 +107,7 @@ class Channel extends EventEmitter {
           return true;
         })
         .then(() => {
-          this.republish();
+          // this.republish();
           this.reack();
           this.removeAllListeners('message');
           this.alive = true;
@@ -126,31 +129,25 @@ class Channel extends EventEmitter {
 
   publish(msg) {
     if (msg) {
-      this._cacheMsg.push(msg);
       if (this.alive) {
-        if (this.hasCachedMsg()) {
-          let message = Buffer.from(this._cacheMsg[0]);
-          this.amqpChannel.publish(this.exchange, this.topic || '', message, this.options || {}, (a) => {
-            this._cacheMsg.splice(this._cacheMsg.indexOf(this._cacheMsg[0]),1);
-            this.republish();
-          });
-        }
+        let message = Buffer.from(msg);
+        this.amqpChannel.publish(this.exchange, this.topic || '', message, this.options || {}, () => {});
       } else {
-        this.emit('failover', this._cacheMsg.shift());
+        this.emit('failover', msg);
         console.log("Channel is dead!");
       }
     }
   }
 
-  republish() {
-    if (this.hasCachedMsg()) {
-      this.publish(this._cacheMsg.pop());
-    }
-  }
+  // republish() {
+  //   if (this.hasCachedMsg()) {
+  //     this.publish(this._cacheMsg.pop());
+  //   }
+  // }
 
-  hasCachedMsg() {
-    return this._cacheMsg.length > 0;
-  }
+  // hasCachedMsg() {
+  //   return this._cacheMsg.length > 0;
+  // }
 
   consume() {
     if (this.alive) {
