@@ -75,27 +75,49 @@ class AMQPPool extends EventEmitter {
     }
   }
 
+  // ToDo: Needs some DRYing
   publish(msg, filter) {
     let channels = this.getAliveChannels();
     if (typeof filter == 'function') {
       let filteredChannels = filter(channels);
       for (let channelIndex in filteredChannels) {
-        filteredChannels[channelIndex].publish(msg);
+        try {
+          filteredChannels[channelIndex].publish(msg);
+        } catch (e) {
+          this.msgCache.push({msg, filter});
+        }
       }
     } else if (filter === 'rr') {
       if (channels.length > 0 ) {
         if(this.rr_i >= channels.length) {
           this.rr_i = 0;
         }
-        console.log(this.rr_i);
-        channels[this.rr_i++].publish(msg);
+        try {
+          channels[this.rr_i++].publish(msg);
+        } catch (e) {
+          this.msgCache.push({msg, filter});
+        }
       } else {
         this.msgCache.push({msg, filter});
       }
     } else if (filter === 'all') {
       if (channels.length > 0) {
         for (let channelIndex in channels) {
-          channels[channelIndex].publish(msg);
+          try {
+            channels[channelIndex].publish(msg);
+          } catch (e) {
+            this.msgCache.push({msg, filter});
+          }
+        }
+      } else {
+        this.msgCache.push({msg, filter});
+      }
+    } else { // first alive
+      if (channels.length > 0) {
+        try {
+          channels[0].publish(msg);
+        } catch (e) {
+          this.msgCache.push({msg, filter});
         }
       } else {
         this.msgCache.push({msg, filter});
