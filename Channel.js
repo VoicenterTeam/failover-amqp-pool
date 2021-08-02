@@ -127,11 +127,11 @@ class Channel extends EventEmitter {
     }
   }
 
-  publish(msg) {
+  publish(msg,topic,options) {
     if (msg) {
       if (this.alive) {
         let message = Buffer.from(msg);
-        this.amqpChannel.publish(this.exchange, this.topic || '', message, this.options || {}, () => {});
+        this.amqpChannel.publish(this.exchange, topic || this.topic || '', message, options || this.options || {}, () => {});
       } else {
         this.emit('failover', msg);
         console.log("Channel is dead!");

@@ -47,7 +47,7 @@ class AMQPPool extends EventEmitter {
     setInterval(() => {
       if (this.msgCache.length > 0 && this.getAliveChannels().length > 0) {
         let m = this.msgCache.shift();
-        this.publish(m.msg, m.filter);
+        this.publish(m.msg, m.filter, m.topic);
       }
     }, 500);
     for (let _url in this.config) {
@@ -76,16 +76,20 @@ class AMQPPool extends EventEmitter {
   }
 
   // ToDo: Needs some DRYing
-  publish(msg, filter) {
+  async publish(msg,filter,topic) {
     let channels = this.getAliveChannels();
     if (typeof filter == 'function') {
-      let filteredChannels = filter(channels);
-      for (let channelIndex in filteredChannels) {
-        try {
-          filteredChannels[channelIndex].publish(msg);
-        } catch (e) {
-          this.msgCache.push({msg, filter});
+      let filteredChannels = await filter(channels);
+      if(Array.isArray(filteredChannels)) {
+        for (let channelIndex in filteredChannels) {
+          try {
+            filteredChannels[channelIndex].publish(msg,topic);
+          } catch (e) {
+            this.msgCache.push({msg, filter, topic});
+          }
         }
+      } else {
+        filteredChannels.publish(msg,topic);
       }
     } else if (filter === 'rr') {
       if (channels.length > 0 ) {
@@ -93,34 +97,34 @@ class AMQPPool extends EventEmitter {
           this.rr_i = 0;
         }
         try {
-          channels[this.rr_i++].publish(msg);
+          channels[this.rr_i++].publish(msg,topic);
         } catch (e) {
-          this.msgCache.push({msg, filter});
+          this.msgCache.push({msg, filter, topic});
         }
       } else {
-        this.msgCache.push({msg, filter});
+        this.msgCache.push({msg, filter, topic});
       }
     } else if (filter === 'all') {
       if (channels.length > 0) {
         for (let channelIndex in channels) {
           try {
-            channels[channelIndex].publish(msg);
+            channels[channelIndex].publish(msg,topic);
           } catch (e) {
-            this.msgCache.push({msg, filter});
+            this.msgCache.push({msg, filter, topic});
           }
         }
       } else {
-        this.msgCache.push({msg, filter});
+        this.msgCache.push({msg, filter, topic});
       }
     } else { // first alive
       if (channels.length > 0) {
         try {
-          channels[0].publish(msg);
+          channels[0].publish(msg,topic);
         } catch (e) {
-          this.msgCache.push({msg, filter});
+          this.msgCache.push({msg, filter, topic});
         }
       } else {
-        this.msgCache.push({msg, filter});
+        this.msgCache.push({msg, filter, topic});
       }
     }
   }
