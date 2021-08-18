@@ -108,7 +108,7 @@ class Channel extends EventEmitter {
         })
         .then(() => {
           // this.republish();
-          this.reack();
+          // this.reack();
           this.removeAllListeners('message');
           this.alive = true;
           this.emit('ready', this);
@@ -127,13 +127,13 @@ class Channel extends EventEmitter {
     }
   }
 
-  publish(msg,topic,options) {
+  publish(msg, topic = null, options = null) {
     if (msg) {
       if (this.alive) {
         let message = Buffer.from(msg);
-        this.amqpChannel.publish(this.exchange, topic || this.topic || '', message, options || this.options || {}, () => {});
+        this.amqpChannel.publish(this.exchange, topic || this.topic, message, options || this.options, () => {});
       } else {
-        this.emit('failover', msg);
+        throw new Error('Channel is dead!')
         console.log("Channel is dead!");
       }
     }
@@ -163,31 +163,14 @@ class Channel extends EventEmitter {
       });
     } else {
       console.log("Channel is dead!");
-      setTimeout(() => {
-        this.consume();
-      }, 500);
     }
   }
 
   ack(msg) {
     if (msg) {
-      this._cacheAck.push(msg);
       if (this.alive) {
-        if (this.hasCachedAck()) {
-          let a = this.amqpChannel.ack(this._cacheAck.shift());
-          this.reack();
-        }
-      } else {
-        setTimeout(() => {
-          this.consume();
-        }, 500);
+        this.amqpChannel.ack(msg);
       }
-    }
-  }
-
-  reack() {
-    if (this.hasCachedAck()) {
-      this.ack(this._cacheAck.pop());
     }
   }
 

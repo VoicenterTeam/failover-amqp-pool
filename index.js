@@ -76,20 +76,16 @@ class AMQPPool extends EventEmitter {
   }
 
   // ToDo: Needs some DRYing
-  async publish(msg,filter,topic) {
+  publish(msg, filter, topic) {
     let channels = this.getAliveChannels();
     if (typeof filter == 'function') {
-      let filteredChannels = await filter(channels);
-      if(Array.isArray(filteredChannels)) {
-        for (let channelIndex in filteredChannels) {
-          try {
-            filteredChannels[channelIndex].publish(msg,topic);
-          } catch (e) {
-            this.msgCache.push({msg, filter, topic});
-          }
+      let filteredChannels = filter(channels);
+      for (let channelIndex in filteredChannels) {
+        try {
+          filteredChannels[channelIndex].publish(msg, topic);
+        } catch (e) {
+          this.msgCache.push({msg, filter, topic});
         }
-      } else {
-        filteredChannels.publish(msg,topic);
       }
     } else if (filter === 'rr') {
       if (channels.length > 0 ) {
@@ -97,7 +93,7 @@ class AMQPPool extends EventEmitter {
           this.rr_i = 0;
         }
         try {
-          channels[this.rr_i++].publish(msg,topic);
+          channels[this.rr_i++].publish(msg, topic);
         } catch (e) {
           this.msgCache.push({msg, filter, topic});
         }
@@ -108,7 +104,7 @@ class AMQPPool extends EventEmitter {
       if (channels.length > 0) {
         for (let channelIndex in channels) {
           try {
-            channels[channelIndex].publish(msg,topic);
+            channels[channelIndex].publish(msg, topic);
           } catch (e) {
             this.msgCache.push({msg, filter, topic});
           }
@@ -119,7 +115,7 @@ class AMQPPool extends EventEmitter {
     } else { // first alive
       if (channels.length > 0) {
         try {
-          channels[0].publish(msg,topic);
+          channels[0].publish(msg, topic);
         } catch (e) {
           this.msgCache.push({msg, filter, topic});
         }

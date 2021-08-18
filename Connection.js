@@ -52,14 +52,14 @@ class Connection extends EventEmitter {
       this.channels.splice(this.channels.indexOf(channel), 1);
     }
   }
-
-  publish(msg) {
-    for (let channelIndex in this.channels) {
-      if (this.channels[channelIndex]) {
-        this.channels[channelIndex].publish(msg);
-      }
-    }
-  }
+  //
+  // publish(msg, topic = null, options = null) {
+  //   for (let channelIndex in this.channels) {
+  //     if (this.channels[channelIndex]) {
+  //       this.channels[channelIndex].publish(msg, topic, options);
+  //     }
+  //   }
+  // }
 
   disconnect() {
     this.alive = false;
