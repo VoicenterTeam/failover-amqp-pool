@@ -98,8 +98,8 @@ client.on('channel', (channel) => {
     console.log("Published ------ " + message.content.toString());
     client.ack(message);
   });
+  client.createDynamicQueue("TestExchange",'createQueueTest',[{x:1,y:2},{x:11,y:22}]);
 });
-
 client.connect();
 ```
 
