@@ -11,6 +11,7 @@ class AmqpPool extends EventEmitter {
     this.currentConfig = null;
     this.currentConnection = false;
     this.currentChannel = false;
+    this.dynamicQueue = {};
 
     if (config instanceof Array) {
       this.configPool = config;
@@ -27,6 +28,7 @@ class AmqpPool extends EventEmitter {
           return this._startConnection()
             .then(this._startChannel.bind(this))
             .then(this._configChannel.bind(this))
+            .then(this._reconfigureDynamicQueue.bind(this))
             .catch(this._handleError.bind(this));
         }
       }
@@ -91,6 +93,39 @@ class AmqpPool extends EventEmitter {
     if (this.currentChannel) {
       this.currentChannel.nack(m);
     }
+  }
+
+  async createDynamicQueue(exchange,queue,headersList){
+    console.log('createDynamicQueue',exchange,queue,headersList);
+    try {
+      await this.currentChannel.deleteQueue(queue);
+    }catch (e) {
+      console.log("before createQueue deleteQueue was failed ,probbely fist time to be decleare ",e);
+    }
+    try {
+      await this.currentChannel.assertQueue(queue || '', {exclusive: false, durable:  !this.currentConfig.channel.durable, noAck: !this.currentConfig.channel.prefetch});
+      this.currentChannel.consume(queue || '', (m) => {
+        if (m == null) {
+          this.consume(1);
+        } else {
+          m.queue=queue;
+          this.emit('message', m);
+        }
+      });
+    }catch (e) {
+      console.error("faild to create queue ",queue, "Error is ",e);
+      return;
+    }
+    if(!headersList)headersList=[null];
+    if(headersList.constructor.name==="Object")headersList=[headersList];
+    for (const headers of  headersList){
+      try {
+        await this.currentChannel.bindQueue(queue, exchange||this.currentConfig.channel.exchange_name,'',headers)
+      }catch (e) {
+        console.error("faild to bindQueue ",queue,headers, "Error is ",e);
+      }
+    }
+    this.dynamicQueue[queue]={exchange,queue,headersList};
   }
 
   _tryRecover() {
@@ -227,6 +262,16 @@ class AmqpPool extends EventEmitter {
       });
   }
 
+ async _reconfigureDynamicQueue(){
+    try {
+      for (const [queue, bindConfig] of Object.entries(this.dynamicQueue)) {
+        await this.createDynamicQueue(bindConfig.exchange,queue,bindConfig.headersList);
+      }
+    }catch (error){
+      console.error("faild to reconfigure DynamicQueue",error);
+    }
+  }
+  
   _handleError(e) {
     console.log(JSON.stringify(e));
     this._tryRecover();
