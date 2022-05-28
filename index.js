@@ -95,7 +95,8 @@ class AmqpPool extends EventEmitter {
     }
   }
 
-  async createDynamicQueue(exchange,queue,headersList){
+  async createDynamicQueue(exchange,queue,headersList,queueOptions){
+    if(!queueOptions||queueOptions.constructor.name!=="Object")queueOptions={};
     console.log('createDynamicQueue',exchange,queue,headersList);
     try {
       await this.currentChannel.deleteQueue(queue);
@@ -103,7 +104,13 @@ class AmqpPool extends EventEmitter {
       console.log("before createQueue deleteQueue was failed ,probbely fist time to be decleare ",e);
     }
     try {
-      await this.currentChannel.assertQueue(queue || '', {exclusive: false, durable:  !this.currentConfig.channel.durable, noAck: !this.currentConfig.channel.prefetch});
+      queueOptions =  {
+        autoDelete : queueOptions.autoDelete|| true,
+        exclusive:  queueOptions.exclusive||true,
+        durable:  queueOptions.durable ||this.currentConfig.channel?.durable,
+        noAck: !this.currentConfig?.channel?.prefetch
+      };
+      await this.currentChannel.assertQueue(queue || '', queueOptions);
       this.currentChannel.consume(queue || '', (m) => {
         if (m == null) {
           this.consume(1);
@@ -271,7 +278,7 @@ class AmqpPool extends EventEmitter {
       console.error("faild to reconfigure DynamicQueue",error);
     }
   }
-  
+
   _handleError(e) {
     console.log(JSON.stringify(e));
     this._tryRecover();
