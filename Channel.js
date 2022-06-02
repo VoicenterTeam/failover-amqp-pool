@@ -89,7 +89,20 @@ class Channel extends EventEmitter {
         })
         .then(() => {
           if (!!~this.directives.indexOf('aq')) {
-            return this.amqpChannel.assertQueue(this.queue, {exclusive: false, durable: true, noAck: !this.prefetch})
+            let opts = {
+              exclusive: false,
+              durable: true,
+              noAck: !this.prefetch,
+              expires: this?.options?.expires,
+              messageTtl: this?.options?.messageTtl,
+              deadLetterExchange: this?.options?.deadLetterExchange,
+              deadLetterRoutingKey: this?.options?.deadLetterRoutingKey,
+              maxLength: this?.options?.maxLength,
+              maxPriority: this?.options?.maxPriority,
+              overflow: this?.options?.overflow,
+              queueMode: this?.options?.queueMode,
+            };
+            return this.amqpChannel.assertQueue(this.queue, opts)
               .then((assertion) => {
                 this.queue = assertion.queue;
                 return true;
