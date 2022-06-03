@@ -16,7 +16,6 @@ class Channel extends EventEmitter {
     this.topic = "";
     this.options = {};
     this.alive = false;
-    // this._cacheMsg = [];
     this._cacheAck = [];
 
     if (channelConfig.hasOwnProperty('directives')) {
@@ -66,10 +65,6 @@ class Channel extends EventEmitter {
             this.alive = false;
             console.log(e);
             console.log('Channel error');
-            // setTimeout(() => {
-            //   console.log("Channel retry");
-            //   this.create();
-            // }, 1000);
           });
 
           if (this.prefetch) {
@@ -90,8 +85,9 @@ class Channel extends EventEmitter {
         .then(() => {
           if (!!~this.directives.indexOf('aq')) {
             let opts = {
-              exclusive: false,
-              durable: true,
+              exclusive: this?.options?.exclusive || false,
+              durable: this?.options?.durable || true,
+              arguments: this?.options?.arguments,
               noAck: !this.prefetch,
               expires: this?.options?.expires,
               messageTtl: this?.options?.messageTtl,
@@ -101,6 +97,9 @@ class Channel extends EventEmitter {
               maxPriority: this?.options?.maxPriority,
               overflow: this?.options?.overflow,
               queueMode: this?.options?.queueMode,
+              autoDelete: this?.options?.autoDelete,
+              consumerTag: this?.options?.consumerTag,
+              noLocal: this?.options?.noLocal
             };
             return this.amqpChannel.assertQueue(this.queue, opts)
               .then((assertion) => {
@@ -120,8 +119,6 @@ class Channel extends EventEmitter {
           return true;
         })
         .then(() => {
-          // this.republish();
-          // this.reack();
           this.removeAllListeners('message');
           this.alive = true;
           this.emit('ready', this);
@@ -131,9 +128,6 @@ class Channel extends EventEmitter {
           console.log(err);
           console.log("err");
           this.alive = false;
-          // setTimeout(() => {
-          //   this.create();
-          // }, 500);
         });
     } else {
       console.log("Whoops my connection is dead!!!");
@@ -151,16 +145,6 @@ class Channel extends EventEmitter {
       }
     }
   }
-
-  // republish() {
-  //   if (this.hasCachedMsg()) {
-  //     this.publish(this._cacheMsg.pop());
-  //   }
-  // }
-
-  // hasCachedMsg() {
-  //   return this._cacheMsg.length > 0;
-  // }
 
   consume() {
     if (this.alive) {
