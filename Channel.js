@@ -18,25 +18,25 @@ class Channel extends EventEmitter {
     this.alive = false;
     this._cacheAck = [];
 
-    if (channelConfig.hasOwnProperty('directives')) {
+    if (channelConfig.hasOwnProperty('directives') && channelConfig.directives) {
       this.directives = channelConfig.hasOwnProperty('directives') && channelConfig.directives.split(',').length > 0 ? channelConfig.directives.split(',') : ["ea", "qa"];
     }
-    if (channelConfig.hasOwnProperty('exchange_name')) {
+    if (channelConfig.hasOwnProperty('exchange_name')  && channelConfig.exchange_name) {
       this.exchange = channelConfig.exchange_name;
     }
-    if (channelConfig.hasOwnProperty('exchange_type')) {
+    if (channelConfig.hasOwnProperty('exchange_type')  && channelConfig.exchange_type) {
       this.exchange_type = channelConfig.exchange_type;
     }
-    if (channelConfig.hasOwnProperty('queue_name')) {
+    if (channelConfig.hasOwnProperty('queue_name')  && channelConfig.queue_name) {
       this.queue = channelConfig.queue_name;
     }
-    if (channelConfig.hasOwnProperty('prefetch')) {
+    if (channelConfig.hasOwnProperty('prefetch')  && channelConfig.prefetch) {
       this.prefetch = !isNaN(parseInt(channelConfig.prefetch)) ? parseInt(channelConfig.prefetch) : false;
     }
-    if (channelConfig.hasOwnProperty('topic')) {
+    if (channelConfig.hasOwnProperty('topic')  && channelConfig.topic) {
       this.topic = channelConfig.topic;
     }
-    if (channelConfig.hasOwnProperty('options')) {
+    if (channelConfig.hasOwnProperty('options')  && channelConfig.options) {
       this.options = channelConfig.options;
     }
 
