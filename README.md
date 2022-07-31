@@ -252,3 +252,45 @@ pool.on('ready', (_channel) => {
     })(_channel);
 });
 ```
+
+Transport
+
+```json
+const winston = require('winston');
+const WinstonAMQPPoolTransport = require("./WinstonAMQPPoolTransport.js");
+
+const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.json(),
+  defaultMeta: { service: 'user-service' },
+  transports: [
+    new WinstonAMQPPoolTransport({winstonConfig: { filename: 'error.log', level: 'error' }, amqp: [
+        {
+          "connection": {
+            "host": "127.0.0.1",
+            "port": 5672,
+            "ssl": false,
+            "username": "user",
+            "password": "password",
+            "vhost": "/",
+            "heartbeat": 5,
+            "reconnectInterval": 2000
+          },
+          "channel": {
+            "directives": "ae",
+            "exchange_name": "TestE",
+            "exchange_type": "fanout",
+            "exchange_durable": true,
+            "topic": "",
+            "reconnectInterval": 2000
+          }
+        }
+      ]}),
+  ],
+});
+
+setInterval(() => {
+  console.log(1)
+  logger.log( 'error', 'asdasdsadsad');
+}, 1000);
+```
