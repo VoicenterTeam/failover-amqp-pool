@@ -4,10 +4,10 @@ let Pool = require('./index');
 class WinstonAMQPPoolTransport extends Transport {
     constructor(opts) {
         super(opts);
-        this.strategy = opts.amqpPool.strategy || 'all';
-        this.topic = opts.amqpPool.topic || '';
+        this.strategy = opts.strategy || 'all';
+        this.topic = opts.topic || '';
         this.channel = {};
-        this.client = new Pool(opts.amqpPool.lines);
+        this.client = new Pool(opts.pool);
         this.client.on('ready', (channel) => {
             this.channel = channel;
         });

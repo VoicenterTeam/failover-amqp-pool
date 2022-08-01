@@ -279,30 +279,28 @@ transports: [
 new WinstonAMQPPoolTransport({
     filename: 'error.log',
     level: 'error',
-    amqpPool: {
-        lines: [{
-            "connection": {
-                "host": "127.0.0.1",
-                "port": 5672,
-                "ssl": false,
-                "username": "user",
-                "password": "password",
-                "vhost": "/",
-                "heartbeat": 5,
-                "reconnectInterval": 2000
-            },
-            "channel": {
-                "directives": "ae",
-                "exchange_name": "TestE",
-                "exchange_type": "fanout",
-                "exchange_durable": true,
-                "topic": "",
-                "reconnectInterval": 2000
-            }
-        }],
-        strategy: 'all',
-        topic: ""
-    }
+    pool: [{
+        "connection": {
+            "host": "127.0.0.1",
+            "port": 5672,
+            "ssl": false,
+            "username": "user",
+            "password": "password",
+            "vhost": "/",
+            "heartbeat": 5,
+            "reconnectInterval": 2000
+        },
+        "channel": {
+            "directives": "ae",
+            "exchange_name": "TestE",
+            "exchange_type": "fanout",
+            "exchange_durable": true,
+            "topic": "",
+            "reconnectInterval": 2000
+        }
+    }],
+    strategy: 'all',
+    topic: ""
 });
 
 setInterval(() => {
