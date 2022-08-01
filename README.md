@@ -1,20 +1,26 @@
 # failover-amqp-pool
+
 amqp pool client
 
 ### Usage
 
-It is important to set correct `directives` to make pool all queues and exchanges bind properly like `"directives": "ae,aq,qte"`.
+It is important to set correct `directives` to make pool all queues and exchanges bind properly
+like `"directives": "ae,aq,qte"`.
+
 - ae - assert exchang
 - aq - assert queue
 - qte - bind queue to exchange
 
 Publishing strategies:
+
 - "rr" - round robin (for all available channels)
 - "all" - to all available channels
 - function(msg, channels) {} - callback
 
 ### Consume
+
 config:
+
 ```json
 [
   {
@@ -111,7 +117,9 @@ config:
   }
 ]
 ```
+
 code:
+
 ```js
 let cfg = require('./config1.json');
 const AMQPPool = require('./index');
@@ -122,7 +130,7 @@ pool.on('ready', (_channel) => {
     (function (channel) {
         channel.on("message", (message) => {
             setTimeout(() => {
-                console.log('<< '+message.content.toString() + " -> " + i);
+                console.log('<< ' + message.content.toString() + " -> " + i);
                 channel.ack(message);
                 i++;
             }, 500);
@@ -133,7 +141,9 @@ pool.on('ready', (_channel) => {
 ```
 
 ### Feed
+
 config:
+
 ```json
 [
   {
@@ -214,7 +224,9 @@ config:
   }
 ]
 ```
+
 code:
+
 ```js
 let cfg = require('./config.json');
 const AMQPPool = require('./index');
@@ -232,9 +244,9 @@ setInterval(() => {
 // Publish a message with a callback which implements rr
 let rr_i = 0;
 setInterval(() => {
-    pool.publish("Mesage-" + i, function(channels) {
-        if(rr_i >= channels.length) {
-          rr_i = 0;
+    pool.publish("Mesage-" + i, function (channels) {
+        if (rr_i >= channels.length) {
+            rr_i = 0;
         }
         return channels[rr_i++];
     });
@@ -243,7 +255,7 @@ setInterval(() => {
 
 // Publish a message to all available channels
 pool.on('ready', (_channel) => {
-    (function(channel) {
+    (function (channel) {
         setInterval(() => {
             channel.publish("Mesage-" + i, "all");
             console.log("Mesage-" + i);
@@ -253,44 +265,48 @@ pool.on('ready', (_channel) => {
 });
 ```
 
-Transport
+###Transport
 
 ```json
-const winston = require('winston');
+cconst winston = require('winston');
 const WinstonAMQPPoolTransport = require("./WinstonAMQPPoolTransport.js");
 
 const logger = winston.createLogger({
-  level: 'info',
-  format: winston.format.json(),
-  defaultMeta: { service: 'user-service' },
-  transports: [
-    new WinstonAMQPPoolTransport({winstonConfig: { filename: 'error.log', level: 'error' }, amqp: [
-        {
-          "connection": {
-            "host": "127.0.0.1",
-            "port": 5672,
-            "ssl": false,
-            "username": "user",
-            "password": "password",
-            "vhost": "/",
-            "heartbeat": 5,
-            "reconnectInterval": 2000
-          },
-          "channel": {
-            "directives": "ae",
-            "exchange_name": "TestE",
-            "exchange_type": "fanout",
-            "exchange_durable": true,
-            "topic": "",
-            "reconnectInterval": 2000
-          }
-        }
-      ]}),
-  ],
+level: 'info',
+format: winston.format.json(),
+defaultMeta: {service: 'user-service'},
+transports: [
+new WinstonAMQPPoolTransport({
+    filename: 'error.log',
+    level: 'error',
+    amqpPool: {
+        lines: [{
+            "connection": {
+                "host": "127.0.0.1",
+                "port": 5672,
+                "ssl": false,
+                "username": "user",
+                "password": "password",
+                "vhost": "/",
+                "heartbeat": 5,
+                "reconnectInterval": 2000
+            },
+            "channel": {
+                "directives": "ae",
+                "exchange_name": "TestE",
+                "exchange_type": "fanout",
+                "exchange_durable": true,
+                "topic": "",
+                "reconnectInterval": 2000
+            }
+        }],
+        strategy: 'all',
+        topic: ""
+    }
 });
 
 setInterval(() => {
-  console.log(1)
-  logger.log( 'error', 'asdasdsadsad');
+    console.log(1)
+    logger.log( 'error', 'asdasdsadsad');
 }, 1000);
 ```
