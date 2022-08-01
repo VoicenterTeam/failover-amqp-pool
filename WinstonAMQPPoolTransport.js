@@ -6,11 +6,7 @@ class WinstonAMQPPoolTransport extends Transport {
         super(opts);
         this.strategy = opts.strategy || 'all';
         this.topic = opts.topic || '';
-        this.channel = {};
         this.client = new Pool(opts.pool);
-        this.client.on('ready', (channel) => {
-            this.channel = channel;
-        });
         this.client.start();
 
     }
