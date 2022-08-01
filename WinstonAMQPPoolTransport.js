@@ -16,8 +16,7 @@ class WinstonAMQPPoolTransport extends Transport {
     }
     log(info, callback) {
         try {
-            if(this.channel?.publish)
-                this.channel.publish(JSON.stringify(info), this.strategy, this.topic);
+            this.client.publish(JSON.stringify(info), this.strategy, this.topic);
         }catch (e) {
             console.error(e)
         }
