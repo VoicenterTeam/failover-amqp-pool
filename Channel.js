@@ -9,38 +9,18 @@ class Channel extends EventEmitter {
     this.connection = connection;
     this.amqpChannel = null;
     this.directives = ["ea", "qa"];
-    this.exchange = "";
-    this.exchange_type = "";
-    this.queue = "";
+    this.exchange = channelConfig?.exchange;
+    this.binding = channelConfig?.binding;
+    this.queue = channelConfig?.queue;
     this.prefetch = false;
     this.topic = "";
     this.options = {};
     this.alive = false;
     this._cacheAck = [];
 
-    if (channelConfig.hasOwnProperty('directives') && channelConfig.directives) {
-      this.directives = channelConfig.hasOwnProperty('directives') && channelConfig.directives.split(',').length > 0 ? channelConfig.directives.split(',') : ["ea", "qa"];
-    }
-    if (channelConfig.hasOwnProperty('exchange_name')  && channelConfig.exchange_name) {
-      this.exchange = channelConfig.exchange_name;
-    }
-    if (channelConfig.hasOwnProperty('exchange_type')  && channelConfig.exchange_type) {
-      this.exchange_type = channelConfig.exchange_type;
-    }
-    if (channelConfig.hasOwnProperty('queue_name')  && channelConfig.queue_name) {
-      this.queue = channelConfig.queue_name;
-    }
     if (channelConfig.hasOwnProperty('prefetch')  && channelConfig.prefetch) {
       this.prefetch = !isNaN(parseInt(channelConfig.prefetch)) ? parseInt(channelConfig.prefetch) : false;
     }
-    if (channelConfig.hasOwnProperty('topic')  && channelConfig.topic) {
-      this.topic = channelConfig.topic;
-    }
-    if (channelConfig.hasOwnProperty('options')  && channelConfig.options) {
-      this.options = channelConfig.options;
-    }
-
-    this.options.mandatory = true;
 
     this.connection.on('connection', () => {
       this.create();
@@ -74,47 +54,47 @@ class Channel extends EventEmitter {
           return amqpChannel;
         })
         .then(() => {
-          if (!!~this.directives.indexOf('ae') && this.exchange !== "") {
-            return this.amqpChannel.assertExchange(this.exchange, this.exchange_type, {durable: true});
+          if (this?.exchange?.name && this?.exchange?.type) {
+            return this.amqpChannel.assertExchange(this.exchange.name, this.exchange.type, this.exchange.options || {});
           }
-          if (this.hasOwnProperty('exchange') && this.exchange !== '') {
-            return this.amqpChannel.checkExchange(this.exchange);
+          if (this?.exchange?.name) {
+            return this.amqpChannel.checkExchange(this.exchange.name);
           }
           return true;
         })
         .then(() => {
-          if (!!~this.directives.indexOf('aq')) {
+          if (this?.queue?.name) {
             let opts = {
-              exclusive: this?.options?.exclusive || false,
-              durable: this?.options?.durable || true,
-              arguments: this?.options?.arguments,
+              exclusive: this?.queue?.options?.exclusive || false,
+              durable: this?.queue?.options?.durable || true,
+              arguments: this?.queue?.options?.arguments || {},
               noAck: !this.prefetch,
-              expires: this?.options?.expires,
-              messageTtl: this?.options?.messageTtl,
-              deadLetterExchange: this?.options?.deadLetterExchange,
-              deadLetterRoutingKey: this?.options?.deadLetterRoutingKey,
-              maxLength: this?.options?.maxLength,
-              maxPriority: this?.options?.maxPriority,
-              overflow: this?.options?.overflow,
-              queueMode: this?.options?.queueMode,
-              autoDelete: this?.options?.autoDelete,
-              consumerTag: this?.options?.consumerTag,
-              noLocal: this?.options?.noLocal
+              expires: this?.queue?.options?.expires,
+              messageTtl: this?.queue?.options?.messageTtl,
+              deadLetterExchange: this?.queue?.options?.deadLetterExchange,
+              deadLetterRoutingKey: this?.queue?.options?.deadLetterRoutingKey,
+              maxLength: this?.queue?.options?.maxLength,
+              maxPriority: this?.queue?.options?.maxPriority,
+              overflow: this?.queue?.options?.overflow,
+              queueMode: this?.queue?.options?.queueMode,
+              autoDelete: this?.queue?.options?.autoDelete,
+              consumerTag: this?.queue?.options?.consumerTag,
+              noLocal: this?.queue?.options?.noLocal
             };
-            return this.amqpChannel.assertQueue(this.queue, opts)
+            return this.amqpChannel.assertQueue(this.queue.name, opts)
               .then((assertion) => {
-                this.queue = assertion.queue;
+                this.queue.name = assertion.queue;
                 return true;
               });
           }
-          if (this.hasOwnProperty('queue') && this.queue !== '') {
-            return this.amqpChannel.checkQueue(this.queue);
+          if (this?.queue?.name) {
+            return this.amqpChannel.checkQueue(this.queue.name);
           }
           return true;
         })
         .then(() => {
-          if (!!~this.directives.indexOf('qte') && this.queue !== "" && this.exchange !== "") {
-            return this.amqpChannel.bindQueue(this.queue, this.exchange, this.topic || '', this.options || {});
+          if (this?.binding?.enabled && this?.queue?.name && this?.exchange?.name) {
+            return this.amqpChannel.bindQueue(this.queue.name, this.exchange.name, this?.binding?.pattern || '', this?.binding?.options || {});
           }
           return true;
         })
@@ -134,11 +114,11 @@ class Channel extends EventEmitter {
     }
   }
 
-  publish(msg, topic = null, options = null) {
+  publish(msg, topic = "", options = {}) {
     if (msg) {
       if (this.alive) {
         let message = Buffer.from(msg);
-        this.amqpChannel.publish(this.exchange, topic || this.topic, message, options || this.options, () => {});
+        this.amqpChannel.publish(this.exchange.name, topic, message, options, () => {});
       } else {
         throw new Error('Channel is dead!')
         console.log("Channel is dead!");
@@ -148,7 +128,7 @@ class Channel extends EventEmitter {
 
   consume() {
     if (this.alive) {
-      this.amqpChannel.consume(this.queue, (m) => {
+      this.amqpChannel.consume(this.queue.name, (m) => {
         if (m == null) {
           this.amqpChannel.close();
           this.create();

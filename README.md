@@ -3,14 +3,6 @@
 amqp pool client
 
 ### Usage
-
-It is important to set correct `directives` to make pool all queues and exchanges bind properly
-like `"directives": "ae,aq,qte"`.
-
-- ae - assert exchang
-- aq - assert queue
-- qte - bind queue to exchange
-
 Publishing strategies:
 
 - "rr" - round robin (for all available channels)
@@ -34,16 +26,26 @@ config:
       "heartbeat": 5
     },
     "channel": {
-      "directives": "ae,aq,qte",
-      "exchange_name": "TestE",
-      "exchange_type": "fanout",
-      "exchange_durable": true,
-      "queue_name": "TestQ",
-      "queue_durable": true,
-      "queue_exclusive": false,
-      "prefetch": 5,
-      "topic": "",
-      "options": {}
+      "exchange": {
+        "name": "TestExchange",
+        "type": "fanout",
+        "options": {
+          "durable": true
+        }
+      },
+      "queue": {
+        "name": "TestQueue",
+        "options": {
+          "exclusive": false,
+          "durable": true
+        }
+      },
+      "binding":  {
+        "enabled": true,
+        "pattern": "routing_key",
+        "options": {}
+      },
+      "prefetch": 5
     }
   },
   {
@@ -57,16 +59,26 @@ config:
       "heartbeat": 5
     },
     "channel": {
-      "directives": "ae,aq,qte",
-      "exchange_name": "TestExchange",
-      "exchange_type": "fanout",
-      "exchange_durable": true,
-      "queue_name": "TestQueue",
-      "queue_durable": true,
-      "queue_exclusive": false,
-      "prefetch": 5,
-      "topic": "",
-      "options": {}
+      "exchange": {
+        "name": "TestExchange2",
+        "type": "fanout",
+        "options": {
+          "durable": true
+        }
+      },
+      "queue": {
+        "name": "TestQueue2",
+        "options": {
+          "exclusive": false,
+          "durable": true
+        }
+      },
+      "binding":  {
+        "enabled": true,
+        "pattern": "",
+        "options": {}
+      },
+      "prefetch": 5
     }
   },
   {
@@ -80,16 +92,26 @@ config:
       "heartbeat": 5
     },
     "channel": {
-      "directives": "ae,aq,qte",
-      "exchange_name": "TestExchange1",
-      "exchange_type": "fanout",
-      "exchange_durable": true,
-      "queue_name": "TestQueue1",
-      "queue_durable": true,
-      "queue_exclusive": false,
-      "prefetch": 5,
-      "topic": "",
-      "options": {}
+      "exchange": {
+        "name": "TestExchange3",
+        "type": "fanout",
+        "options": {
+          "durable": true
+        }
+      },
+      "queue": {
+        "name": "TestQueue3",
+        "options": {
+          "exclusive": false,
+          "durable": true
+        }
+      },
+      "binding":  {
+        "enabled": true,
+        "pattern": "routing_key",
+        "options": {}
+      },
+      "prefetch": 5
     }
   },
   {
@@ -103,16 +125,26 @@ config:
       "heartbeat": 5
     },
     "channel": {
-      "directives": "ae,aq,qte",
-      "exchange_name": "TestExchange2",
-      "exchange_type": "fanout",
-      "exchange_durable": true,
-      "queue_name": "TestQueue2",
-      "queue_durable": true,
-      "queue_exclusive": false,
-      "prefetch": 5,
-      "topic": "",
-      "options": {}
+      "exchange": {
+        "name": "TestExchange4",
+        "type": "fanout",
+        "options": {
+          "durable": true
+        }
+      },
+      "queue": {
+        "name": "TestQueue4",
+        "options": {
+          "exclusive": false,
+          "durable": true
+        }
+      },
+      "binding":  {
+        "enabled": true,
+        "pattern": "routing_key",
+        "options": {}
+      },
+      "prefetch": 5
     }
   }
 ]
@@ -157,12 +189,13 @@ config:
       "heartbeat": 5
     },
     "channel": {
-      "directives": "ae",
-      "exchange_name": "TestE",
-      "exchange_type": "fanout",
-      "exchange_durable": true,
-      "topic": "",
-      "options": {}
+      "exchange": {
+        "name": "TestExchange",
+        "type": "fanout",
+        "options": {
+          "durable": true
+        }
+      }
     }
   },
   {
@@ -176,12 +209,13 @@ config:
       "heartbeat": 5
     },
     "channel": {
-      "directives": "ae",
-      "exchange_name": "TestExchange",
-      "exchange_type": "fanout",
-      "exchange_durable": true,
-      "topic": "",
-      "options": {}
+      "exchange": {
+        "name": "TestExchange1",
+        "type": "fanout",
+        "options": {
+          "durable": true
+        }
+      }
     }
   },
   {
@@ -195,12 +229,13 @@ config:
       "heartbeat": 5
     },
     "channel": {
-      "directives": "ae",
-      "exchange_name": "TestExchange1",
-      "exchange_type": "fanout",
-      "exchange_durable": true,
-      "topic": "",
-      "options": {}
+      "exchange": {
+        "name": "TestExchange2",
+        "type": "fanout",
+        "options": {
+          "durable": true
+        }
+      }
     }
   },
   {
@@ -214,12 +249,13 @@ config:
       "heartbeat": 5
     },
     "channel": {
-      "directives": "ae",
-      "exchange_name": "TestExchange2",
-      "exchange_type": "fanout",
-      "exchange_durable": true,
-      "topic": "",
-      "options": {}
+      "exchange": {
+        "name": "TestExchange3",
+        "type": "fanout",
+        "options": {
+          "durable": true
+        }
+      }
     }
   }
 ]
@@ -237,7 +273,7 @@ pool.start();
 
 // Publish a message rr with internal counter
 setInterval(() => {
-    pool.publish("Mesage-" + i, "rr");
+    pool.publish("Mesage-" + i, 'rr', "pattern", {"headers": {"asd": "asd"}});
     i++;
 }, 1000);
 
@@ -268,7 +304,7 @@ pool.on('ready', (_channel) => {
 ###Transport
 
 ```json
-cconst winston = require('winston');
+const winston = require('winston');
 const WinstonAMQPPoolTransport = require("./WinstonAMQPPoolTransport.js");
 
 const logger = winston.createLogger({
@@ -291,12 +327,13 @@ new WinstonAMQPPoolTransport({
             "reconnectInterval": 2000
         },
         "channel": {
-            "directives": "ae",
-            "exchange_name": "TestE",
-            "exchange_type": "fanout",
-            "exchange_durable": true,
-            "topic": "",
-            "reconnectInterval": 2000
+            "exchange": {
+                "name": "TestExchange",
+                "type": "fanout",
+                "options": {
+                    "durable": true
+                }
+            }
         }
     }],
     strategy: 'all',
