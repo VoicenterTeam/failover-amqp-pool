@@ -131,6 +131,12 @@ class AMQPPool extends EventEmitter {
     });
   }
 
+  nack(msg) {
+    this.getChannelById(msg.properties.channelId).map((channel) => {
+      channel.nack(msg);
+    });
+  }
+
   getAliveChannels() {
     let channels = [];
     for (let connectionIndex in this.connections) {

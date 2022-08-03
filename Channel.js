@@ -116,6 +116,8 @@ class Channel extends EventEmitter {
 
   publish(msg, topic = "", options = {}) {
     if (msg) {
+      options.messageId = options?.messageId || nanoId();
+      options.timestamp = options?.timestamp || Math.round(new Date().getTime()/1000);
       if (this.alive) {
         let message = Buffer.from(msg);
         this.amqpChannel.publish(this.exchange.name, topic, message, options, () => {});
@@ -147,6 +149,14 @@ class Channel extends EventEmitter {
     if (msg) {
       if (this.alive) {
         this.amqpChannel.ack(msg);
+      }
+    }
+  }
+
+  nack(msg) {
+    if (msg) {
+      if (this.alive) {
+        this.amqpChannel.nack(msg);
       }
     }
   }
