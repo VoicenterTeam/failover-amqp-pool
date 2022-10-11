@@ -115,7 +115,7 @@ class AMQPPool extends EventEmitter {
     } else { // first alive
       if (channels.length > 0) {
         try {
-          channels[0].publish(msg, topic);
+          channels[0].publish(msg, topic, props);
         } catch (e) {
           this.msgCache.push({msg, filter, topic, props});
         }
