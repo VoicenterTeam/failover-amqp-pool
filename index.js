@@ -86,7 +86,6 @@ class AMQPPool extends EventEmitter {
   // ToDo: Needs some DRYing
   publish(msg, filter, topic, props) {
     topic = topic || this.config.publish?.topic
-    if(msg instanceof Object) msg = JSON.stringify(msg)
     let channels = this.getAliveChannels();
     if (typeof filter == 'function') {
       let filteredChannels = filter(channels);
