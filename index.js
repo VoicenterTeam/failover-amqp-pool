@@ -1,13 +1,20 @@
 function _parsConfig (rawConfig) {
   let parsedConfig = {};
-  for (let item in rawConfig) {
-    let url = _buildUrl(rawConfig[item].connection);
-    parsedConfig[url] = (parsedConfig.hasOwnProperty(url)) ? parsedConfig[url] : {};
+  let pool = rawConfig?.pool || rawConfig
+  for (let item in pool) {
+    let url = _buildUrl(pool[item].connection);
+    parsedConfig[url] = (pool.hasOwnProperty(url)) ? parsedConfig[url] : {};
 
     parsedConfig[url].channels = (parsedConfig[url].hasOwnProperty('channels')) ? parsedConfig[url].channels : [];
-    parsedConfig[url].channels.push(rawConfig[item].channel);
-    parsedConfig[url].config = rawConfig[item].connection;
+    if(pool[item].hasOwnProperty('channels'))
+      parsedConfig[url].channels = parsedConfig[url].channels.concat(pool[item].channels)
+    else 
+      parsedConfig[url].channels.push(Object.assign( {}, rawConfig?.defaultChannelSettings, pool[item].channel) );
+    parsedConfig[url].config = pool[item].connection;
   }
+
+  
+
   // console.log(parsedConfig)
   return parsedConfig;
 }
@@ -59,6 +66,7 @@ class AMQPPool extends EventEmitter {
           channel.on('ready', (channel) => {
             this.emit('ready', channel);
           });
+          channel.on('error', console.error)
           channel.on('message', (msg) => {
             this.emit('message', msg);
           });
@@ -77,6 +85,8 @@ class AMQPPool extends EventEmitter {
 
   // ToDo: Needs some DRYing
   publish(msg, filter, topic, props) {
+    topic = topic || this.config.publish?.topic
+    if(msg instanceof Object) msg = JSON.stringify(msg)
     let channels = this.getAliveChannels();
     if (typeof filter == 'function') {
       let filteredChannels = filter(channels);
@@ -84,6 +94,7 @@ class AMQPPool extends EventEmitter {
         try {
           filteredChannels[channelIndex].publish(msg, topic, props);
         } catch (e) {
+          console.log('Error in publish', e)
           this.msgCache.push({msg, filter, topic, props});
         }
       }
@@ -115,8 +126,9 @@ class AMQPPool extends EventEmitter {
     } else { // first alive
       if (channels.length > 0) {
         try {
-          channels[0].publish(msg, topic);
+          channels[0].publish(msg, topic, props);
         } catch (e) {
+          console.log('Error on publish', e)
           this.msgCache.push({msg, filter, topic, props});
         }
       } else {

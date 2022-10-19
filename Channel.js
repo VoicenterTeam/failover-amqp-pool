@@ -13,9 +13,10 @@ class Channel extends EventEmitter {
     this.binding = channelConfig?.binding;
     this.queue = channelConfig?.queue;
     this.prefetch = false;
-    this.topic = "";
-    this.options = {};
+    this.topic = channelConfig?.topic || "";
+    this.options = channelConfig?.options || {};
     this.alive = false;
+    this.msg = channelConfig.msg
     this._cacheAck = [];
 
     if (channelConfig.hasOwnProperty('prefetch')  && channelConfig.prefetch) {
@@ -114,13 +115,17 @@ class Channel extends EventEmitter {
     }
   }
 
-  publish(msg, topic = "", options = {}) {
+  publish(msg, topic = this.topic, options = this.options) {
     if (msg) {
+      if(msg instanceof Object){
+        Object.assign(msg, this.msg);
+        msg = JSON.stringify(msg)
+      }
       options.messageId = options?.messageId || nanoId();
       options.timestamp = options?.timestamp || Math.round(new Date().getTime()/1000);
       if (this.alive) {
         let message = Buffer.from(msg);
-        this.amqpChannel.publish(this.exchange.name, topic, message, options, () => {});
+        this.amqpChannel.publish(this.exchange.name, topic || "", message, options)
       } else {
         throw new Error('Channel is dead!')
         console.log("Channel is dead!");
