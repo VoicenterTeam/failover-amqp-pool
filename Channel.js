@@ -1,10 +1,10 @@
 const EventEmitter = require('events').EventEmitter,
-      nanoId = require('nanoid');
-
+      nanoId = require('nanoid'),
+      hash = require('object-hash');
 class Channel extends EventEmitter {
   constructor(connection, channelConfig) {
     super();
-
+    this.hash = hash(channelConfig)
     this._id = nanoId();
     this.connection = connection;
     this.amqpChannel = null;
@@ -36,16 +36,17 @@ class Channel extends EventEmitter {
           this.amqpChannel = amqpChannel;
           this.amqpChannel.on('close', () => {
             this.alive = false;
-            console.log('Channel closes');
+            this.emit('error', {message: 'All channels closed', url: this.url})
+            //console.log('Channel closes');
             setTimeout(() => {
-              console.log("Channel retry");
+              this.emit('info', {message: 'Retry create a new connetion', url: this.url})
+              //console.log("Channel retry");
               this.create();
             }, 500);
           });
           this.amqpChannel.on('error', (e) => {
             this.alive = false;
-            console.log(e);
-            console.log('Channel error');
+            this.emit('error', {message: 'cant establish a connection', err: err, url: this.url})
           });
 
           if (this.prefetch) {
@@ -102,16 +103,16 @@ class Channel extends EventEmitter {
         .then(() => {
           this.removeAllListeners('message');
           this.alive = true;
+          this.emit('info', {message: 'channel created', id: this._id})
           this.emit('ready', this);
           return true;
         })
         .catch((err) => {
-          console.log(err);
-          console.log("err");
+          this.emit('error', {message: 'cant establish a connection', err: err, url: this.url});
           this.alive = false;
         });
     } else {
-      console.log("Whoops my connection is dead!!!");
+      this.emit('error', { message: 'my connection is dead!!!', url: this.url})
     }
   }
 
@@ -126,9 +127,10 @@ class Channel extends EventEmitter {
       if (this.alive) {
         let message = Buffer.from(msg);
         this.amqpChannel.publish(this.exchange.name, topic || "", message, options)
+        this.emit("info", { message: 'message published', options: options, exchange: this.exchange, url: this.connection.url})
       } else {
+        this.emit('error', {message: 'channel is dead!', channel: this})
         throw new Error('Channel is dead!')
-        console.log("Channel is dead!");
       }
     }
   }
@@ -139,14 +141,14 @@ class Channel extends EventEmitter {
         if (m == null) {
           this.amqpChannel.close();
           this.create();
-          console.log("Message is null");
+          this.emit('error', {message: 'Message is null', channel: this, m: m})
         } else {
           m.properties.channelId = this._id;
           this.emit('message', m);
         }
       });
     } else {
-      console.log("Channel is dead!");
+      this.emit('error', {message: 'channel is dead!', channel: this})
     }
   }
 

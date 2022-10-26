@@ -37,11 +37,11 @@ function _buildUrl(config) {
 const Connection = require('./Connection');
 const Channel = require('./Channel');
 const EventEmitter = require('events').EventEmitter;
+const hash = require('object-hash');
 
 class AMQPPool extends EventEmitter {
   constructor(rawConfig) {
     super();
-
     this.config = _parsConfig(rawConfig);
     this.connections = [];
     this.msgCache= [];
@@ -57,44 +57,63 @@ class AMQPPool extends EventEmitter {
         this.publish(m.msg, m.filter, m.topic, m.props);
       }
     }, 500);
-    for (let _url in this.config) {
-      ((url) => {
-        let connection = new Connection(url, this.config[url].config);
-        this.connections.push(connection);
-        for (let channelConfigIndex in this.config[url].channels) {
-          let channel = new Channel(connection, this.config[url].channels[channelConfigIndex]);
-          channel.on('ready', (channel) => {
-            this.emit('ready', channel);
-          });
-          channel.on('error', console.error)
-          channel.on('message', (msg) => {
-            this.emit('message', msg);
-          });
-          connection.addChannel(channel);
+    // for (let _url in this.config) {
+    //   ((url) => {
+    //     let connection = new Connection(url, this.config[url].config);
+    //     this.connections.push(connection);
+    //     for (let channelConfigIndex in this.config[url].channels) {
+    //       let channel = new Channel(connection, this.config[url].channels[channelConfigIndex]);
+    //       channel.on('ready', (channel) => {
+    //         this.emit('ready', channel);
+    //       });
+    //       channel.on('error', console.error)
+    //       channel.on('message', (msg) => {
+    //         this.emit('message', msg);
+    //       });
+    //       connection.addChannel(channel);
+    //     }
+    //     connection.on('close', () => {
+    //       console.log('close ' + url);
+    //       setTimeout(() => {
+    //         connection.start();
+    //       }, 500);
+    //     });
+    //     connection.start();
+    //   })(_url);
+    // }
+  }
+  AddConnection(rawConfig){
+    let config = _parsConfig(rawConfig);
+    for (let _url in config){
+        let connectionIndex =  this.getConnectionIndexByUrl(_url) 
+        if(!connectionIndex){
+          // Create a new connection
+          connectionIndex = this.createConnection(_url, config[_url].config)
         }
-        connection.on('close', () => {
-          console.log('close ' + url);
-          setTimeout(() => {
-            connection.start();
-          }, 500);
-        });
-        connection.start();
-      })(_url);
+        for (let channelConfigIndex in config[_url].channels) {
+          if(!this.getChannelByHash(connectionIndex, hash(config[_url].channels[channelConfigIndex]))){
+            // Create a new channel
+            this.createChannel(connectionIndex, config[_url].channels[channelConfigIndex])
+          }
+        }   
     }
   }
-
   // ToDo: Needs some DRYing
   publish(msg, filter, topic, props) {
     topic = topic || this.config.publish?.topic
     let channels = this.getAliveChannels();
     if (typeof filter == 'function') {
       let filteredChannels = filter(channels);
-      for (let channelIndex in filteredChannels) {
-        try {
-          filteredChannels[channelIndex].publish(msg, topic, props);
-        } catch (e) {
-          console.log('Error in publish', e)
-          this.msgCache.push({msg, filter, topic, props});
+      if(!filteredChannels) this.msgCache.push({msg, filter, topic, props});
+      else {
+        if(filteredChannels instanceof Channel) filteredChannels = [filteredChannels]
+        for (let channelIndex in filteredChannels) {
+          try {
+            filteredChannels[channelIndex].publish(msg, topic, props);
+          } catch (e) {
+            console.log('Error in publish', e)
+            this.msgCache.push({msg, filter, topic, props});
+          }
         }
       }
     } else if (filter === 'rr') {
@@ -147,7 +166,6 @@ class AMQPPool extends EventEmitter {
       channel.nack(msg);
     });
   }
-
   getAliveChannels() {
     let channels = [];
     for (let connectionIndex in this.connections) {
@@ -161,17 +179,24 @@ class AMQPPool extends EventEmitter {
     }
     return channels;
   }
-
+  getChannelByHash(connectionIndex, hash) {
+    return this.connections[connectionIndex].channels.find(channel => channel.hash === hash)
+  }
   getAllChannels() {
     let channels = [];
     for (let connectionIndex in this.connections) {
-      for (let channelIndex in this.connections[connectionIndex].channels) {
-        channels.push(this.connections[connectionIndex].channels[channelIndex]);
-      }
+      channels = channels.concat(this.connections[connectionIndex].channels);
     }
     return channels;
   }
-
+  getConnectionIndexByUrl(url){
+    for (let connectionIndex in this.connections){
+      if(this.connections[connectionIndex].url === url){
+        return connectionIndex
+      }
+    }
+    return false;
+  }
   getChannelById(id) {
     let channels = [];
     for (let connectionIndex in this.connections) {
@@ -182,6 +207,37 @@ class AMQPPool extends EventEmitter {
       }
     }
     return channels;
+  }
+  createConnection(url, connectionConfig){
+    let connection = new Connection(url, connectionConfig);
+    connection.on('close', () => {
+      this.emit('close', url)
+      setTimeout(() => {
+        connection.start();
+      }, 500);
+    });
+    connection.on('error', (error) => this.emit('error', error))
+    connection.on('info', (info) => this.emit('info', info))
+    connection.on('connection', () => {
+        this.emit('connection', url);
+    })
+    connection.start();
+    return this.connections.push(connection) - 1;
+  }
+  createChannel(connectionIndex, Channelconfig) {
+    const connection = this.connections[connectionIndex]
+    let channel = new Channel(connection, Channelconfig);
+    channel.on('ready', (channel) => {
+      this.emit('ready', channel);
+    });
+    channel.on('error', (error) => this.emit('error', error))
+    channel.on('message', (msg) => {
+      this.emit('message', msg);
+    });
+    channel.on('info', (msg) => {
+      this.emit('info', msg);
+    });
+    connection.addChannel(channel);
   }
 }
 

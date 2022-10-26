@@ -9,6 +9,7 @@ class Connection extends EventEmitter {
     this.channels = [];
     this.amqpConnection = null;
     this.alive = false;
+    this.reconnectInterval = this.config.reconnectInterval  || 500
   }
 
   start() {
@@ -27,18 +28,20 @@ class Connection extends EventEmitter {
             console.log(e);
           });
           this.alive = true;
+          this.emit('info', {message: 'Connection created', url: this.url});
           this.emit('connection', this);
         })
         .then(() => {
-          console.log('Ok');
+          //this.emit('connection', this);
+          //console.log('Ok');
         })
         .catch((error) => {
           this.alive = false;
-          console.log(error)
-          console.log("Failed to setup connection");
+          this.emit('error', { error: error , url: this.url})
           setTimeout(() => {
+            this.emit('info', { message: 'Retry reconnecting', url: this.url})
             this.start();
-          }, 500);
+          }, this.reconnectInterval);
         });
     }
   }
