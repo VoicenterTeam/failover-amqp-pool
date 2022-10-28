@@ -2,6 +2,8 @@ const EventEmitter = require('events').EventEmitter,
       nanoId = require('nanoid'),
       hash = require('object-hash');
 class Channel extends EventEmitter {
+  #isAlive= false;
+  #isConnecting = false;
   constructor(connection, channelConfig) {
     super();
     this.hash = hash(channelConfig)
@@ -22,31 +24,28 @@ class Channel extends EventEmitter {
     if (channelConfig.hasOwnProperty('prefetch')  && channelConfig.prefetch) {
       this.prefetch = !isNaN(parseInt(channelConfig.prefetch)) ? parseInt(channelConfig.prefetch) : false;
     }
-
-    this.connection.on('connection', () => {
+  }
+  get alive(){
+    if(!this.#isAlive && !this.#isConnecting)
       this.create();
-    })
+    return this.#isAlive;
+  }
+  set alive(isAlive){
+    this.#isAlive = isAlive;
   }
 
   create() {
     if (this.connection.alive) {
+      this.#isConnecting = true;
       this.connection.amqpConnection.createConfirmChannel()
         .then((amqpChannel) => {
-          amqpChannel.waitForConfirms();
           this.amqpChannel = amqpChannel;
           this.amqpChannel.on('close', () => {
             this.alive = false;
-            this.emit('error', {message: 'All channels closed', url: this.url})
-            //console.log('Channel closes');
-            setTimeout(() => {
-              this.emit('info', {message: 'Retry create a new connetion', url: this.url})
-              //console.log("Channel retry");
-              this.create();
-            }, 500);
           });
-          this.amqpChannel.on('error', (e) => {
+          this.amqpChannel.on('error', (err) => {
             this.alive = false;
-            this.emit('error', {message: 'cant establish a connection', err: err, url: this.url})
+            this.emit('error', err);
           });
 
           if (this.prefetch) {
@@ -108,11 +107,14 @@ class Channel extends EventEmitter {
           return true;
         })
         .catch((err) => {
-          this.emit('error', {message: 'cant establish a connection', err: err, url: this.url});
+          this.emit('error', {message: 'cant establish a channel', err: err});
           this.alive = false;
+          return this.connection
+        }).finally( _ => {
+          this.#isConnecting = false;
         });
     } else {
-      this.emit('error', { message: 'my connection is dead!!!', url: this.url})
+      this.emit('error', { message: 'my connection is dead!!!'})
     }
   }
 

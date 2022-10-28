@@ -1,6 +1,11 @@
 function _parsConfig (rawConfig) {
   let parsedConfig = {};
-  let pool = rawConfig?.pool || rawConfig
+  let pool = []
+  if(rawConfig instanceof Object) {
+    pool = rawConfig?.pool || rawConfig
+  } else if(rawConfig instanceof Array) {
+    pool = rawConfig
+  }
   for (let item in pool) {
     let url = _buildUrl(pool[item].connection);
     parsedConfig[url] = (pool.hasOwnProperty(url)) ? parsedConfig[url] : {};
@@ -12,10 +17,7 @@ function _parsConfig (rawConfig) {
       parsedConfig[url].channels.push(Object.assign( {}, rawConfig?.defaultChannelSettings, pool[item].channel) );
     parsedConfig[url].config = pool[item].connection;
   }
-
   
-
-  // console.log(parsedConfig)
   return parsedConfig;
 }
 
@@ -42,45 +44,22 @@ const hash = require('object-hash');
 class AMQPPool extends EventEmitter {
   constructor(rawConfig) {
     super();
-    this.config = _parsConfig(rawConfig);
     this.connections = [];
     this.msgCache= [];
 
     // round_robin
     this.rr_i = 0;
+
+    this.AddConnection(rawConfig);
   }
 
-  start() {
+  start(msgCacheInterval = 2000) {
     setInterval(() => {
       if (this.msgCache.length > 0 && this.getAliveChannels().length > 0) {
         let m = this.msgCache.shift();
         this.publish(m.msg, m.filter, m.topic, m.props);
       }
-    }, 500);
-    // for (let _url in this.config) {
-    //   ((url) => {
-    //     let connection = new Connection(url, this.config[url].config);
-    //     this.connections.push(connection);
-    //     for (let channelConfigIndex in this.config[url].channels) {
-    //       let channel = new Channel(connection, this.config[url].channels[channelConfigIndex]);
-    //       channel.on('ready', (channel) => {
-    //         this.emit('ready', channel);
-    //       });
-    //       channel.on('error', console.error)
-    //       channel.on('message', (msg) => {
-    //         this.emit('message', msg);
-    //       });
-    //       connection.addChannel(channel);
-    //     }
-    //     connection.on('close', () => {
-    //       console.log('close ' + url);
-    //       setTimeout(() => {
-    //         connection.start();
-    //       }, 500);
-    //     });
-    //     connection.start();
-    //   })(_url);
-    // }
+    }, msgCacheInterval);
   }
   AddConnection(rawConfig){
     let config = _parsConfig(rawConfig);
@@ -100,7 +79,6 @@ class AMQPPool extends EventEmitter {
   }
   // ToDo: Needs some DRYing
   publish(msg, filter, topic, props) {
-    topic = topic || this.config.publish?.topic
     let channels = this.getAliveChannels();
     if (typeof filter == 'function') {
       let filteredChannels = filter(channels);
@@ -230,6 +208,7 @@ class AMQPPool extends EventEmitter {
     channel.on('ready', (channel) => {
       this.emit('ready', channel);
     });
+    channel.on('close', (close) => this.emit('close', close))
     channel.on('error', (error) => this.emit('error', error))
     channel.on('message', (msg) => {
       this.emit('message', msg);

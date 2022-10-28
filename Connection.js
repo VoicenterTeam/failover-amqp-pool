@@ -2,6 +2,7 @@ const amqplib = require('amqplib');
 const EventEmitter = require('events').EventEmitter;
 
 class Connection extends EventEmitter {
+  #isAlive = false;
   constructor(url, config) {
     super();
     this.url = url;
@@ -10,26 +11,38 @@ class Connection extends EventEmitter {
     this.amqpConnection = null;
     this.alive = false;
     this.reconnectInterval = this.config.reconnectInterval  || 500
+    this.timeout = this.config?.timeout || 5000
+    this.connection_name = this.config?.connection_name || 'amqp_pool_client'
+
+  }
+  set alive(isAlive) {
+    this.#isAlive = isAlive;
+      if(!this.#isAlive) 
+        this.channels.forEach( channel => {
+            channel.alive = this.#isAlive;
+        })
+  }
+  get alive(){
+    return this.#isAlive
   }
 
   start() {
     if (!this.alive) {
-      amqplib.connect(this.url, {})
-        .then((connection) => {
+      this.emit('info', { message: 'Connecting', url: this.url})
+      amqplib.connect(this.url, {timeout: this.timeout ,clientProperties: {connection_name: this.connection_name}})
+      .then((connection) => {
           this.amqpConnection = connection;
-          this.amqpConnection.on('close', () => {
+          this.amqpConnection.on('close', (e) => {
             this.alive = false;
-            console.log('Connection closes');
             this.emit('close', this);
           });
           this.amqpConnection.on('error', (e) => {
-            this.alive = false;
-            console.log('Connection error');
-            console.log(e);
+            this.emit('error', e)
+            // this.alive = false;
           });
           this.alive = true;
           this.emit('info', {message: 'Connection created', url: this.url});
-          this.emit('connection', this);
+          this.connection()
         })
         .then(() => {
           //this.emit('connection', this);
@@ -39,13 +52,22 @@ class Connection extends EventEmitter {
           this.alive = false;
           this.emit('error', { error: error , url: this.url})
           setTimeout(() => {
-            this.emit('info', { message: 'Retry reconnecting', url: this.url})
+            //this.emit('info', { message: 'Retry reconnecting', url: this.url})
             this.start();
           }, this.reconnectInterval);
         });
     }
   }
-
+  connection(){
+    this.channels.forEach( channel => {
+      try {
+        channel.create()
+      } catch (error) {
+        
+      }
+      
+    })
+  }
   addChannel(channel) {
     this.channels.push(channel);
   }
