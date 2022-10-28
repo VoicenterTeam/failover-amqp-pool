@@ -19,7 +19,7 @@
   "license": "MIT",
   "homepage": "https://github.com/VoicenterTeam/failover-amqp-pool",
   "dependencies": {
-    "amqplib": "^0.8.0",
+    "amqplib": "0.10.3",
     "nanoid": "^2.1.11",
     "object-hash": "^3.0.0"
   }
