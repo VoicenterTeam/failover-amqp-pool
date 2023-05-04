@@ -6,18 +6,23 @@ function _parsConfig (rawConfig) {
   } else if(rawConfig instanceof Array) {
     pool = rawConfig
   }
-  for (let item in pool) {
-    let url = _buildUrl(pool[item].connection);
-    parsedConfig[url] = (pool.hasOwnProperty(url)) ? parsedConfig[url] : {};
+  if(Array.isArray(pool)) pool.forEach( config => build(config, parsedConfig))
+  else build(pool, parsedConfig)
+  return parsedConfig
+   
+}
 
-    parsedConfig[url].channels = (parsedConfig[url].hasOwnProperty('channels')) ? parsedConfig[url].channels : [];
-    if(pool[item].hasOwnProperty('channels'))
-      parsedConfig[url].channels = parsedConfig[url].channels.concat(pool[item].channels)
-    else 
-      parsedConfig[url].channels.push(Object.assign( {}, rawConfig?.defaultChannelSettings, pool[item].channel) );
-    parsedConfig[url].config = pool[item].connection;
-  }
-  
+function build(pool, parsedConfig){
+  let url = _buildUrl(pool.connection);
+  parsedConfig[url] = (pool.hasOwnProperty(url)) ? parsedConfig[url] : {};
+
+  parsedConfig[url].channels = (parsedConfig[url].hasOwnProperty('channels')) ? parsedConfig[url].channels : [];
+  if(pool.hasOwnProperty('channels'))
+    parsedConfig[url].channels = parsedConfig[url].channels.concat(pool.channels)
+  else 
+    parsedConfig[url].channels.push(Object.assign( {}, rawConfig?.defaultChannelSettings, pool.channel) );
+  parsedConfig[url].config = pool.connection;
+
   return parsedConfig;
 }
 
