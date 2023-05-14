@@ -25,6 +25,9 @@ class Channel extends EventEmitter {
       this.prefetch = !isNaN(parseInt(channelConfig.prefetch)) ? parseInt(channelConfig.prefetch) : false;
     }
   }
+  get isConsumable(){
+    return this.queue && this.queue.name
+  }
   get alive(){
     if(!this.#isAlive && !this.#isConnecting)
       this.create();
@@ -64,7 +67,7 @@ class Channel extends EventEmitter {
           return true;
         })
         .then(() => {
-          if (this?.queue?.name) {
+          if (this.isConsumable) {
             let opts = {
               exclusive: this?.queue?.options?.exclusive || false,
               durable: this?.queue?.options?.durable || true,
@@ -138,7 +141,10 @@ class Channel extends EventEmitter {
   }
 
   consume() {
-    if (this.alive) {
+    if(this.isConsumable){
+      this.emit('error', {message: 'Cant create channel on that queue' , channel: this})
+    }
+    else if (this.alive) {
       this.amqpChannel.consume(this.queue.name, (m) => {
         if (m == null) {
           this.amqpChannel.close();
