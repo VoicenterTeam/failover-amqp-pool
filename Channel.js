@@ -141,8 +141,8 @@ class Channel extends EventEmitter {
   }
 
   consume() {
-    if(this.isConsumable){
-      this.emit('error', {message: 'Cant create channel on that queue' , channel: this})
+    if(!this.isConsumable){
+      this.emit('error', {message: 'Cant consume queue name is missing' , channel: this})
     }
     else if (this.alive) {
       this.amqpChannel.consume(this.queue.name, (m) => {
