@@ -20,7 +20,7 @@ function build(pool, parsedConfig){
   if(pool.hasOwnProperty('channels'))
     parsedConfig[url].channels = parsedConfig[url].channels.concat(pool.channels)
   else 
-    parsedConfig[url].channels.push(Object.assign( {}, rawConfig?.defaultChannelSettings, pool.channel) );
+    parsedConfig[url].channels.push(Object.assign( {}, pool?.defaultChannelSettings, pool.channel) );
   parsedConfig[url].config = pool.connection;
 
   return parsedConfig;
