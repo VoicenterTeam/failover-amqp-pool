@@ -1,6 +1,7 @@
 const EventEmitter = require('events').EventEmitter,
       nanoId = require('nanoid'),
-      hash = require('object-hash');
+      hash = require('object-hash'),
+      os = require('os');
 class Channel extends EventEmitter {
   #isAlive= false;
   #isConnecting = false;
@@ -13,7 +14,7 @@ class Channel extends EventEmitter {
     this.directives = ["ea", "qa"];
     this.exchange = channelConfig?.exchange;
     this.binding = channelConfig?.binding;
-    this.queue = channelConfig?.queue;
+    this.queue = channelConfig?.queue || {};
     this.prefetch = false;
     this.topic = channelConfig?.topic || "";
     this.options = channelConfig?.options || {};
@@ -36,7 +37,25 @@ class Channel extends EventEmitter {
   set alive(isAlive){
     this.#isAlive = isAlive;
   }
-
+  get queueOptions(){
+    return {
+      exclusive: this?.queue?.options?.exclusive || false,
+      durable: this?.queue?.options?.durable || false,
+      arguments: this?.queue?.options?.arguments || {},
+      noAck: !this.prefetch,
+      expires: this?.queue?.options?.expires,
+      messageTtl: this?.queue?.name ? this?.queue?.options?.messageTtl : 3600,
+      deadLetterExchange: this?.queue?.options?.deadLetterExchange,
+      deadLetterRoutingKey: this?.queue?.options?.deadLetterRoutingKey,
+      maxLength: this?.queue?.options?.maxLength,
+      maxPriority: this?.queue?.options?.maxPriority,
+      overflow: this?.queue?.options?.overflow,
+      queueMode: this?.queue?.options?.queueMode,
+      autoDelete: this?.queue?.name ? this?.queue?.options?.autoDelete : true,
+      consumerTag: this?.queue?.options?.consumerTag,
+      noLocal: this?.queue?.options?.noLocal
+    }
+  }
   create() {
     if (this.connection.alive) {
       this.#isConnecting = true;
@@ -68,24 +87,7 @@ class Channel extends EventEmitter {
         })
         .then(() => {
           if (this.isConsumable) {
-            let opts = {
-              exclusive: this?.queue?.options?.exclusive || false,
-              durable: this?.queue?.options?.durable || true,
-              arguments: this?.queue?.options?.arguments || {},
-              noAck: !this.prefetch,
-              expires: this?.queue?.options?.expires,
-              messageTtl: this?.queue?.options?.messageTtl,
-              deadLetterExchange: this?.queue?.options?.deadLetterExchange,
-              deadLetterRoutingKey: this?.queue?.options?.deadLetterRoutingKey,
-              maxLength: this?.queue?.options?.maxLength,
-              maxPriority: this?.queue?.options?.maxPriority,
-              overflow: this?.queue?.options?.overflow,
-              queueMode: this?.queue?.options?.queueMode,
-              autoDelete: this?.queue?.options?.autoDelete,
-              consumerTag: this?.queue?.options?.consumerTag,
-              noLocal: this?.queue?.options?.noLocal
-            };
-            return this.amqpChannel.assertQueue(this.queue.name, opts)
+            return this.amqpChannel.assertQueue(this.queue.name, this.queueOptions)
               .then((assertion) => {
                 this.queue.name = assertion.queue;
                 return true;
@@ -139,22 +141,34 @@ class Channel extends EventEmitter {
       }
     }
   }
-
   consume() {
-    if(!this.isConsumable){
-      this.emit('error', {message: 'Cant consume queue name is missing' , channel: this})
-    }
-    else if (this.alive) {
-      this.amqpChannel.consume(this.queue.name, (m) => {
-        if (m == null) {
-          this.amqpChannel.close();
-          this.create();
-          this.emit('error', {message: 'Message is null', channel: this, m: m})
-        } else {
-          m.properties.channelId = this._id;
-          this.emit('message', m);
-        }
-      });
+    if (this.alive) {
+      if(!this.isConsumable){
+        this.emit('info', {message: 'consume queue name is missing creating dynamic queue' })
+
+        this.amqpChannel.assertQueue(`${this._id}:${os.hostname}` , this.queueOptions).then( m => {
+          this.queue.name = m.queue 
+          this.emit('info', `Queue created dynamic: ${this.queue.name}`)
+          this.amqpChannel.bindQueue(this.queue.name, this.exchange.name, this?.binding?.pattern || '', this?.binding?.options || {}).then( b => {
+            this.consume();
+          });
+
+          
+        }).catch(e => {
+          console.log(e)
+        })
+      }else {
+        this.amqpChannel.consume(this.queue.name, (m) => {
+          if (m == null) {
+            this.amqpChannel.close();
+            this.create();
+            this.emit('error', {message: 'Message is null', channel: this, m: m})
+          } else {
+            m.properties.channelId = this._id;
+            this.emit('message', m);
+          }
+        });
+      }
     } else {
       this.emit('error', {message: 'channel is dead!', channel: this})
     }
