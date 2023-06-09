@@ -15,6 +15,7 @@ class Connection extends EventEmitter {
     this.connection_name = this.config?.connection_name || 'amqp_pool_client'
 
   }
+
   set alive(isAlive) {
     this.#isAlive = isAlive;
       if(!this.#isAlive) 
@@ -22,6 +23,7 @@ class Connection extends EventEmitter {
             channel.alive = this.#isAlive;
         })
   }
+
   get alive(){
     return this.#isAlive
   }
@@ -46,7 +48,7 @@ class Connection extends EventEmitter {
         })
         .then(() => {
           //this.emit('connection', this);
-          //console.log('Ok');
+          console.log('Ok');
         })
         .catch((error) => {
           this.alive = false;
@@ -81,7 +83,7 @@ class Connection extends EventEmitter {
   disconnect() {
     this.alive = false;
     if (this.connection) {
-      this.connection.close();
+      this.amqpConnection.close();
     }
   }
 

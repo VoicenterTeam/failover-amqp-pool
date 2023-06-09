@@ -1,6 +1,7 @@
 const EventEmitter = require('events').EventEmitter,
       nanoId = require('nanoid'),
       hash = require('object-hash');
+
 class Channel extends EventEmitter {
   #isAlive= false;
   #isConnecting = false;
@@ -25,11 +26,13 @@ class Channel extends EventEmitter {
       this.prefetch = !isNaN(parseInt(channelConfig.prefetch)) ? parseInt(channelConfig.prefetch) : false;
     }
   }
+
   get alive(){
     if(!this.#isAlive && !this.#isConnecting)
       this.create();
     return this.#isAlive;
   }
+
   set alive(isAlive){
     this.#isAlive = isAlive;
   }
