@@ -194,8 +194,13 @@ class Channel extends EventEmitter {
     return this._cacheAck.length > 0;
   }
 
-  sendToQueue(msg) {
-
+  sendToQueue(queue, msg) {
+    if(msg instanceof Object){
+      Object.assign(msg, this.msg);
+      msg = JSON.stringify(msg)
+    }
+    msg = Buffer.from(msg)
+    this.amqpChannel.sendToQueue(queue, message)
   }
 }
 
