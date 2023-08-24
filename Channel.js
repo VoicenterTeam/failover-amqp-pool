@@ -39,20 +39,24 @@ class Channel extends EventEmitter {
     this.#isAlive = isAlive;
   }
   get queueOptions(){
+    let messageTtl = 3600000;
+    if(this?.queue?.options?.messageTtl === 'none') messageTtl = undefined
+    if(Number.isInteger(this?.queue?.options?.messageTtl)) messageTtl = this?.queue?.options?.messageTtl
+
     return {
       exclusive: this?.queue?.options?.exclusive || false,
       durable: this?.queue?.options?.durable || false,
       arguments: this?.queue?.options?.arguments || {},
       noAck: !this.prefetch,
       expires: this?.queue?.options?.expires,
-      messageTtl: Number.isInteger(this?.queue?.options?.messageTtl) ? this?.queue?.options?.messageTtl : 3600000 ,
+      messageTtl: messageTtl ,
       deadLetterExchange: this?.queue?.options?.deadLetterExchange,
       deadLetterRoutingKey: this?.queue?.options?.deadLetterRoutingKey,
       maxLength: this?.queue?.options?.maxLength,
       maxPriority: this?.queue?.options?.maxPriority,
       overflow: this?.queue?.options?.overflow,
       queueMode: this?.queue?.options?.queueMode,
-      autoDelete: Boolean(this?.queue?.options?.autoDelete) ? this?.queue?.options?.autoDelete : true,
+      autoDelete: this?.queue?.options?.autoDelete ?? true,
       consumerTag: this?.queue?.options?.consumerTag,
       noLocal: this?.queue?.options?.noLocal
     }
