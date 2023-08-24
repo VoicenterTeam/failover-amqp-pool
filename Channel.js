@@ -45,14 +45,14 @@ class Channel extends EventEmitter {
       arguments: this?.queue?.options?.arguments || {},
       noAck: !this.prefetch,
       expires: this?.queue?.options?.expires,
-      messageTtl: this?.queue?.options?.messageTtl ? this?.queue?.options?.messageTtl : 3600000 ,
+      messageTtl: Number.isInteger(this?.queue?.options?.messageTtl) ? this?.queue?.options?.messageTtl : 3600000 ,
       deadLetterExchange: this?.queue?.options?.deadLetterExchange,
       deadLetterRoutingKey: this?.queue?.options?.deadLetterRoutingKey,
       maxLength: this?.queue?.options?.maxLength,
       maxPriority: this?.queue?.options?.maxPriority,
       overflow: this?.queue?.options?.overflow,
       queueMode: this?.queue?.options?.queueMode,
-      autoDelete: this?.queue?.options?.autoDelete ? this?.queue?.options?.autoDelete : true,
+      autoDelete: Boolean(this?.queue?.options?.autoDelete) ? this?.queue?.options?.autoDelete : true,
       consumerTag: this?.queue?.options?.consumerTag,
       noLocal: this?.queue?.options?.noLocal
     }
