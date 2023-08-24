@@ -230,9 +230,9 @@ class AMQPPool extends EventEmitter {
     const connection = this.connections[connectionIndex]
     let channel = new Channel(connection, Channelconfig);
     channel.on('ready', (channel) => this.emit('ready', channel));
-    channel.on('close', (close) => this.emit('close', close))
-    channel.on('error', (error) => this.emit('error', error))
-    channel.on('message', (msg) => this.emit('message', msg));
+    channel.on('close', (close) => this.emit('close', close));
+    channel.on('error', (error) => this.emit('error', error));
+    channel.on('channelMessage', (msg) => this.emit('channelMessage', msg));
     channel.on('info', (msg) => this.emit('info', msg));
     connection.addChannel(channel);
   }

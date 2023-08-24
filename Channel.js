@@ -21,6 +21,7 @@ class Channel extends EventEmitter {
     this.alive = false;
     this.msg = channelConfig.msg
     this._cacheAck = [];
+    this.autoConsume = channelConfig?.autoConsume || false;
 
     if (channelConfig.hasOwnProperty('prefetch')  && channelConfig.prefetch) {
       this.prefetch = !isNaN(parseInt(channelConfig.prefetch)) ? parseInt(channelConfig.prefetch) : false;
@@ -44,14 +45,14 @@ class Channel extends EventEmitter {
       arguments: this?.queue?.options?.arguments || {},
       noAck: !this.prefetch,
       expires: this?.queue?.options?.expires,
-      messageTtl: this?.queue?.name ? this?.queue?.options?.messageTtl : 3600,
+      messageTtl: this?.queue?.options?.messageTtl ? this?.queue?.options?.messageTtl : 3600000 ,
       deadLetterExchange: this?.queue?.options?.deadLetterExchange,
       deadLetterRoutingKey: this?.queue?.options?.deadLetterRoutingKey,
       maxLength: this?.queue?.options?.maxLength,
       maxPriority: this?.queue?.options?.maxPriority,
       overflow: this?.queue?.options?.overflow,
       queueMode: this?.queue?.options?.queueMode,
-      autoDelete: this?.queue?.name ? this?.queue?.options?.autoDelete : true,
+      autoDelete: this?.queue?.options?.autoDelete ? this?.queue?.options?.autoDelete : true,
       consumerTag: this?.queue?.options?.consumerTag,
       noLocal: this?.queue?.options?.noLocal
     }
@@ -100,7 +101,7 @@ class Channel extends EventEmitter {
         })
         .then(() => {
           if (this?.binding?.enabled && this?.queue?.name && this?.exchange?.name) {
-            return this.amqpChannel.bindQueue(this.queue.name, this.exchange.name, this?.binding?.pattern || '', this?.binding?.options || {});
+            return this.#bindQueue(this.queue.name, this.exchange.name, this?.binding?.pattern || '', this?.binding?.options || {});
           }
           return true;
         })
@@ -109,6 +110,7 @@ class Channel extends EventEmitter {
           this.alive = true;
           this.emit('info', {message: 'channel created', id: this._id})
           this.emit('ready', this);
+          if(this.autoConsume) this.consume()
           return true;
         })
         .catch((err) => {
@@ -122,7 +124,16 @@ class Channel extends EventEmitter {
       this.emit('error', { message: 'my connection is dead!!!'})
     }
   }
-
+  #bindQueue(queue, exchange, pattern = '', options = {}){
+    if(Array.isArray(options)){
+      options.forEach( header => {
+        this.amqpChannel.bindQueue(queue, exchange, pattern, header);
+      })
+      return true;
+    }else {
+      return this.amqpChannel.bindQueue(queue, exchange, pattern, options);
+    }
+  } 
   publish(msg, topic = this.topic, options = this.options) {
     if (msg) {
       if(msg instanceof Object){
@@ -141,7 +152,7 @@ class Channel extends EventEmitter {
       }
     }
   }
-  consume() {
+  consume(queue = this.queue.name) {
     if (this.alive) {
       if(!this.isConsumable){
         this.emit('info', {message: 'consume queue name is missing creating dynamic queue' })
@@ -149,7 +160,7 @@ class Channel extends EventEmitter {
         this.amqpChannel.assertQueue(`${this._id}:${os.hostname}` , this.queueOptions).then( m => {
           this.queue.name = m.queue 
           this.emit('info', `Queue created dynamic: ${this.queue.name}`)
-          this.amqpChannel.bindQueue(this.queue.name, this.exchange.name, this?.binding?.pattern || '', this?.binding?.options || {}).then( b => {
+          this.#bindQueue(this.queue.name, this.exchange.name, this?.binding?.pattern || '', this?.binding?.options || {}).then( b => {
             this.consume();
           });
 
@@ -165,7 +176,9 @@ class Channel extends EventEmitter {
             this.emit('error', {message: 'Message is null', channel: this, m: m})
           } else {
             m.properties.channelId = this._id;
+            m.properties.queue = queue
             this.emit('message', m);
+            this.emit('channelMessage', m)
           }
         });
       }
