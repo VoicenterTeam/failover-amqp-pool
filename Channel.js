@@ -92,16 +92,26 @@ class Channel extends EventEmitter {
         })
         .then(() => {
           if (this.isConsumable) {
-            return this.amqpChannel.assertQueue(this.queue.name, this.queueOptions)
-              .then((assertion) => {
-                this.queue.name = assertion.queue;
-                return true;
-              });
-          }
-          if (this?.queue?.name) {
-            return this.amqpChannel.checkQueue(this.queue.name);
+            if (!this.queueStatus)
+            return this.amqpChannel.checkQueue(this.queue.name).catch(err => {
+              if(err.code === 404){
+                  this.queueStatus = 1;
+                  this.create();
+              }
+               this.emit('error',err)
+            })
           }
           return true;
+        }).then((assertion) =>{
+          if(assertion.queue){
+            this.queue.name = assertion.queue;
+            return true;
+          }
+          return this.amqpChannel.assertQueue(this.queue.name, this.queueOptions)
+          .then((assertion) => {
+            this.queue.name = assertion.queue;
+            return true;
+          });
         })
         .then(() => {
           if (this?.binding?.enabled && this?.queue?.name && this?.exchange?.name) {
