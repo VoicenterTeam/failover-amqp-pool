@@ -56,7 +56,7 @@ class Channel extends EventEmitter {
       maxPriority: this?.queue?.options?.maxPriority,
       overflow: this?.queue?.options?.overflow,
       queueMode: this?.queue?.options?.queueMode,
-      autoDelete: this?.queue?.options?.autoDelete ?? true,
+      autoDelete: this?.queue?.options?.autoDelete,
       consumerTag: this?.queue?.options?.consumerTag,
       noLocal: this?.queue?.options?.noLocal
     }
