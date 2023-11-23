@@ -1,5 +1,6 @@
 let process = require('process');
-
+const pmx = require('pmx');
+const probe = pmx.probe();
 
 function build(pool, parsedConfig){
   let url = _buildUrl(pool.connection);
@@ -60,6 +61,45 @@ class AMQPPool extends EventEmitter {
         process.exit(err ? 1 : 0);
       })
     });
+
+    // Metrics used to work with connections
+    this.activeConnectionsCount = probe.metric({
+      name: 'rabbit_connections_total_count',
+      value: () => this.connections.length
+    })
+
+    this.reconnectedConnectionsCount = probe.counter({
+      name: 'rabbit_reconnected_connections_count',
+    })
+
+    // Metrics used to work with channels
+    this.aliveChannelsCount = probe.metric({
+      name: 'rabbit_alive_channels_count',
+      value: () => (this.getAliveChannels()).length,
+      interval: 10 * 60 * 60 // Check every 10 minutes
+    })
+
+    this.allChannelsCount = probe.metric({
+      name: 'rabbit_all_channels_count',
+      value: () => (this.getAllChannels()).length,
+      interval: 10 * 60 * 60 // Check every 10 minutes
+    })
+
+    // Metrics used to work with messages
+    this.messageSuccessRate = probe.meter({
+      name: 'rabbit_message_success_rate',
+      samples: 1_000_000, // Keep in memory up to 1 million records for last 8 hours
+      timeframe: 8 * 60 * 60 // keep track of last 8 hours
+    })
+    
+    this.messageTotalCount = probe.counter({
+      name: 'rabbit_message_total_count',
+    })
+
+    this.messageCachedCount = probe.metric({
+      name: 'rabbit_message_cached_count', 
+      value: () => this.msgCache.length
+    })
   }
 
   start(msgCacheInterval = 2000) {
@@ -97,6 +137,7 @@ class AMQPPool extends EventEmitter {
 
   // ToDo: Needs some DRYing
   publish(msg, filter, topic, props) {
+    this.messageTotalCount.inc();
     let channels = this.getAliveChannels();
     if (typeof filter == 'function') {
       let filteredChannels = filter(channels);
@@ -106,9 +147,11 @@ class AMQPPool extends EventEmitter {
         for (let channelIndex in filteredChannels) {
           try {
             filteredChannels[channelIndex].publish(msg, topic, props);
+            this.messageSuccessRate.mark(true);
           } catch (e) {
             this.emit('error', e)
             this.msgCache.push({msg, filter, topic, props});
+            this.messageSuccessRate.mark(false);
           }
         }
       }
@@ -119,8 +162,10 @@ class AMQPPool extends EventEmitter {
         }
         try {
           channels[this.rr_i++].publish(msg, topic, props);
+          this.messageSuccessRate.mark(true);
         } catch (e) {
           this.msgCache.push({msg, filter, topic, props});
+          this.messageSuccessRate.mark(false);
         }
       } else {
         this.msgCache.push({msg, filter, topic, props});
@@ -130,8 +175,10 @@ class AMQPPool extends EventEmitter {
         for (let channelIndex in channels) {
           try {
             channels[channelIndex].publish(msg, topic, props);
+            this.messageSuccessRate.mark(true);
           } catch (e) {
             this.msgCache.push({msg, filter, topic, props});
+            this.messageSuccessRate.mark(false);
           }
         }
       } else {
@@ -141,10 +188,12 @@ class AMQPPool extends EventEmitter {
       if (channels.length > 0) {
         try {
           channels[0].publish(msg, topic, props);
+          this.messageSuccessRate.mark(true);
         } catch (e) {
           
           this.emit('error', e)
           this.msgCache.push({msg, filter, topic, props});
+          this.messageSuccessRate.mark(false);
         }
       } else {
         this.msgCache.push({msg, filter, topic, props});
@@ -218,11 +267,13 @@ class AMQPPool extends EventEmitter {
       setTimeout(() => {
         connection.start();
       }, 500);
+      this.reconnectedConnectionsCount.inc();
     });
     connection.on('error', (error) => this.emit('error', error))
     connection.on('info', (info) => this.emit('info', info))
     connection.on('connection', () => this.emit('connection', url))
     connection.start();
+
     return this.connections.push(connection) - 1;
   }
 
