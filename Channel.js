@@ -61,10 +61,10 @@ class Channel extends EventEmitter {
       noLocal: this?.queue?.options?.noLocal
     }
   }
-  create() {
+  async #createChannel(){
     if (this.connection.alive) {
       this.#isConnecting = true;
-      this.connection.amqpConnection.createConfirmChannel()
+      return this.connection.amqpConnection.createConfirmChannel()
         .then((amqpChannel) => {
           this.amqpChannel = amqpChannel;
           this.amqpChannel.on('close', () => {
@@ -81,7 +81,15 @@ class Channel extends EventEmitter {
 
           return amqpChannel;
         })
-        .then(() => {
+      }
+      else {
+        this.emit('error', { message: 'my connection is dead!!!'})
+        throw new Error('my connection is dead!!!' + this.connection.url)
+      }
+  }
+  create() {
+   this.#createChannel()
+    .then(() => {
           if (this?.exchange?.name && this?.exchange?.type) {
             return this.amqpChannel.assertExchange(this.exchange.name, this.exchange.type, this.exchange.options || {});
           }
@@ -91,27 +99,10 @@ class Channel extends EventEmitter {
           return true;
         })
         .then(() => {
-          if (this.isConsumable) {
-            if (!this.queueStatus)
-            return this.amqpChannel.checkQueue(this.queue.name).catch(err => {
-              if(err.code === 404){
-                  this.queueStatus = 1;
-                  this.create();
-              }
-               this.emit('error',err)
-            })
+          if(this.isConsumable){
+            return this.#createQueue(this.queue.name, this.queueOptions)
           }
           return true;
-        }).then((assertion) =>{
-          if(assertion.queue){
-            this.queue.name = assertion.queue;
-            return true;
-          }
-          return this.amqpChannel.assertQueue(this.queue.name, this.queueOptions)
-          .then((assertion) => {
-            this.queue.name = assertion.queue;
-            return true;
-          });
         })
         .then(() => {
           if (this?.binding?.enabled && this?.queue?.name && this?.exchange?.name) {
@@ -134,9 +125,29 @@ class Channel extends EventEmitter {
         }).finally( _ => {
           this.#isConnecting = false;
         });
-    } else {
-      this.emit('error', { message: 'my connection is dead!!!'})
-    }
+  }
+  #createQueue(queue, options){
+       return this.amqpChannel.checkQueue(queue).then(assertion => {
+          if(assertion.queue){
+            this.queue.name = assertion.queue;
+            return true;
+          }
+
+        }).catch(err => {
+            if(err.code === 404){
+                this.queueStatus = 1;
+                return this.#createChannel().then( channel => {
+                    channel.assertQueue(queue, options)
+                    .then((assertion) => {
+                      this.emit('info', `queue ${assertion.queue} created`)
+
+                      return true;
+                });
+                });
+            }
+            this.emit('error',err)
+            throw err;
+        })
   }
   #bindQueue(queue, exchange, pattern = '', options = {}){
     if(Array.isArray(options)){
@@ -170,19 +181,18 @@ class Channel extends EventEmitter {
     if (this.alive) {
       if(!this.isConsumable){
         this.emit('info', {message: 'consume queue name is missing creating dynamic queue' })
-
-        this.amqpChannel.assertQueue(`${this._id}:${os.hostname}` , this.queueOptions).then( m => {
+        this.#createQueue(`${this._id}:${os.hostname}`, this.queueOptions).then( m => {
           this.queue.name = m.queue 
           this.emit('info', `Queue created dynamic: ${this.queue.name}`)
           this.#bindQueue(this.queue.name, this.exchange.name, this?.binding?.pattern || '', this?.binding?.options || {}).then( b => {
+            this.emit('info', `consume from queue: ${this.queue.name}`)
             this.consume();
           });
-
-          
         }).catch(e => {
-          console.log(e)
+          this.emit('error', e)
         })
       }else {
+        this.emit('info', `consume started on queue: ${queue}`)
         this.amqpChannel.consume(this.queue.name, (m) => {
           if (m == null) {
             this.amqpChannel.close();
