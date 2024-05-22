@@ -1,19 +1,24 @@
 const amqplib = require('amqplib');
 const EventEmitter = require('events').EventEmitter;
+const os = require('os');
+const Metrics = require('./metrics');
+const METRICS_NAMES = require('./metrics/names');
+
 
 class Connection extends EventEmitter {
   #isAlive = false;
   constructor(url, config) {
     super();
     this.url = url;
+    this.URL = new URL(this.url)
     this.config = config;
     this.channels = [];
     this.amqpConnection = null;
     this.alive = false;
     this.reconnectInterval = this.config.reconnectInterval  || 500
     this.timeout = this.config?.timeout || 5000
-    this.connection_name = this.config?.connection_name || 'amqp_pool_client'
-
+    this.connection_name = this.config?.connection_name || 'amqp_pool_client_' + os.hostname
+    this.metrics = new Metrics(this.URL.host)
   }
   set alive(isAlive) {
     this.#isAlive = isAlive;
@@ -34,9 +39,11 @@ class Connection extends EventEmitter {
           this.amqpConnection = connection;
           this.amqpConnection.on('close', (e) => {
             this.alive = false;
+
             this.emit('close', this);
           });
           this.amqpConnection.on('error', (e) => {
+            this.metrics?.metric(METRICS_NAMES.errorRate)?.mark()
             this.emit('error', e)
             // this.alive = false;
           });
@@ -50,9 +57,10 @@ class Connection extends EventEmitter {
         })
         .catch((error) => {
           this.alive = false;
+          this.metrics.metric(METRICS_NAMES.errorRate).mark()
           this.emit('error', { error: error , url: this.url})
           setTimeout(() => {
-            //this.emit('info', { message: 'Retry reconnecting', url: this.url})
+           this.metrics?.metric(METRICS_NAMES.reconnectedConnectionsCount)?.inc()
             this.start();
           }, this.reconnectInterval);
         });
@@ -80,8 +88,8 @@ class Connection extends EventEmitter {
 
   disconnect() {
     this.alive = false;
-    if (this.connection) {
-      this.connection.close();
+    if (this.amqpConnection) {
+      this.amqpConnection.close();
     }
   }
 

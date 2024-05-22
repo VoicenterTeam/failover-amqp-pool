@@ -1,7 +1,10 @@
 const EventEmitter = require('events').EventEmitter,
       nanoId = require('nanoid'),
       hash = require('object-hash'),
-      os = require('os');
+      os = require('os'),
+      probe = require('@pm2/io'),
+      METRICS_NAMES = require('./metrics/names')
+
 class Channel extends EventEmitter {
   #isAlive= false;
   #isConnecting = false;
@@ -22,14 +25,19 @@ class Channel extends EventEmitter {
     this.msg = channelConfig.msg
     this._cacheAck = [];
     this.autoConsume = channelConfig?.autoConsume || false;
+    
 
     if (channelConfig.hasOwnProperty('prefetch')  && channelConfig.prefetch) {
       this.prefetch = !isNaN(parseInt(channelConfig.prefetch)) ? parseInt(channelConfig.prefetch) : false;
     }
   }
+  get metrics (){
+      return this.connection.metrics
+  }
   get isConsumable(){
     return this.queue && this.queue.name
   }
+
   get alive(){
     if(!this.#isAlive && !this.#isConnecting)
       this.create();
@@ -37,6 +45,14 @@ class Channel extends EventEmitter {
   }
   set alive(isAlive){
     this.#isAlive = isAlive;
+  }
+  get exchangeOptions(){
+    return {
+      exclusive: this?.exchange?.options?.exclusive || false,
+      durable: this?.exchange?.options?.durable || false,
+      autoDelete: this?.exchange?.options?.autoDelete || false,
+      alternateExchange : this?.exchange?.options?.alternateExchange
+    }
   }
   get queueOptions(){
     let messageTtl = 3600000;
@@ -91,7 +107,13 @@ class Channel extends EventEmitter {
    this.#createChannel()
     .then(() => {
           if (this?.exchange?.name && this?.exchange?.type) {
-            return this.amqpChannel.assertExchange(this.exchange.name, this.exchange.type, this.exchange.options || {});
+            return this.amqpChannel.assertExchange(this.exchange.name, this.exchange.type, this.exchangeOptions).catch( error => {
+              this.emit('error', {message: 'cant assert a exchange ' + error?.message, err: error})
+              if(error.code === 406 && error.classId === 40){
+                this.emit('info', {message: `Durable Escape for connect`})
+                return this.#createChannel();
+              }
+            });
           }
           if (this?.exchange?.name) {
             return this.amqpChannel.checkExchange(this.exchange.name);
@@ -135,9 +157,8 @@ class Channel extends EventEmitter {
 
         }).catch(err => {
             if(err.code === 404){
-                this.queueStatus = 1;
-                return this.#createChannel().then( channel => {
-                    channel.assertQueue(queue, options)
+                return this.#createChannel().then( _ => {
+                  this.amqpChannel.assertQueue(queue, options)
                     .then((assertion) => {
                       this.emit('info', `queue ${assertion.queue} created`)
 
@@ -171,7 +192,9 @@ class Channel extends EventEmitter {
         let message = Buffer.from(msg);
         this.amqpChannel.publish(this.exchange.name, topic || "", message, options)
         this.emit("info", { message: 'message published', options: options, exchange: this.exchange, url: this.connection.url})
+        this.metrics?.metric(METRICS_NAMES.messageSuccessRate)?.mark()
       } else {
+        this.metrics?.metric(METRICS_NAMES.messageSuccessRate)?.mark(false)
         this.emit('error', {message: 'channel is dead!', channel: this})
         throw new Error('Channel is dead!')
       }
@@ -201,6 +224,7 @@ class Channel extends EventEmitter {
           } else {
             m.properties.channelId = this._id;
             m.properties.queue = queue
+            this.metrics?.metric(METRICS_NAMES.consumeSuccessRate)?.mark()
             this.emit('message', m);
             this.emit('channelMessage', m)
           }
@@ -215,6 +239,7 @@ class Channel extends EventEmitter {
     if (msg) {
       if (this.alive) {
         this.amqpChannel.ack(msg);
+        this.metrics?.metric(METRICS_NAMES.ackSuccessRate)?.mark()
       }
     }
   }
