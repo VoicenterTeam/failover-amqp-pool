@@ -19,6 +19,7 @@ class Connection extends EventEmitter {
     this.timeout = this.config?.timeout || 5000
     this.connection_name = this.config?.connection_name || 'amqp_pool_client_' + os.hostname
     this.metrics = new Metrics(this.URL.host)
+    this.reconnectOnClose = true;
   }
   set alive(isAlive) {
     this.#isAlive = isAlive;
@@ -39,6 +40,10 @@ class Connection extends EventEmitter {
           this.amqpConnection = connection;
           this.amqpConnection.on('close', (e) => {
             this.alive = false;
+            setTimeout(() => {
+                if(this.reconnectOnClose)
+                this.start();
+            }, 1000);
 
             this.emit('close', this);
           });
@@ -60,7 +65,7 @@ class Connection extends EventEmitter {
           this.metrics.metric(METRICS_NAMES.errorRate).mark()
           this.emit('error', { error: error , url: this.url})
           setTimeout(() => {
-           this.metrics?.metric(METRICS_NAMES.reconnectedConnectionsCount)?.inc()
+          this.metrics?.metric(METRICS_NAMES.reconnectedConnectionsCount)?.inc()
             this.start();
           }, this.reconnectInterval);
         });
@@ -88,6 +93,7 @@ class Connection extends EventEmitter {
 
   disconnect() {
     this.alive = false;
+    this.reconnectOnClose = false;
     if (this.amqpConnection) {
       this.amqpConnection.close();
     }

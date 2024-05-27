@@ -272,9 +272,6 @@ class AMQPPool extends EventEmitter {
     let connection = new Connection(url, connectionConfig);
     connection.on('close', () => {
       this.emit('close', url)
-      setTimeout(() => {
-        connection.start();
-      }, 500);
       connection?.metrics?.metric(METRICS_NAMES.reconnectedConnectionsCount)?.inc()
     });
     connection.on('error', (error) => {
@@ -300,7 +297,7 @@ class AMQPPool extends EventEmitter {
     channel.on('info', (msg) => this.emit('info', msg));
     connection.addChannel(channel);
     if(connection.alive)
-      channel.create();
+    channel.create();
     return channel._id
   }
 }
