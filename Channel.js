@@ -77,6 +77,14 @@ class Channel extends EventEmitter {
       noLocal: this?.queue?.options?.noLocal
     }
   }
+  close(){
+    if(this.alive){
+      this.#isAlive = false;
+      this.#isConnecting = false;
+      this.emit('info', {message: `Channel closed`, id: this._id})
+      this.amqpChannel?.close()
+    }
+  }
   async #createChannel(){
     if (this.connection.alive) {
       this.#isConnecting = true;
@@ -85,6 +93,7 @@ class Channel extends EventEmitter {
           this.amqpChannel = amqpChannel;
           this.amqpChannel.on('close', () => {
             this.alive = false;
+            this.emit('close')
           });
           this.amqpChannel.on('error', (err) => {
             this.alive = false;

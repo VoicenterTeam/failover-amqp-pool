@@ -96,14 +96,24 @@ class AMQPPool extends EventEmitter {
     }, msgCacheInterval);
   }
 
-  stop(cb) {
+  async stop() {
+    let promises = []
     for (let _connection of this.connections) {
-      _connection.disconnect();
+      promises.push(
+        new Promise( (resolve) => {
+        _connection.once('close', () => {
+          this.connections.splice(connectionIndex, 1);
+          resolve(connectionIndex)
+        })
+        _connection.disconnect();
+      })
+      )
     }
-    cb(false);
+    return Promise.all(promises)
   }
 
   addConnection(rawConfig) {
+    let channelIds = []
     let config = _parsConfig(rawConfig);
     for (let _url in config) {
       let connectionIndex =  this.getConnectionIndexByUrl(_url);
@@ -114,10 +124,12 @@ class AMQPPool extends EventEmitter {
       for (let channelConfigIndex in config[_url].channels) {
         if(!this.getChannelByHash(connectionIndex, hash(config[_url].channels[channelConfigIndex]))) {
           // Create a new channel
-          this.createChannel(connectionIndex, config[_url].channels[channelConfigIndex])
+          let id = this.createChannel(connectionIndex, config[_url].channels[channelConfigIndex])
+          channelIds.push(id)
         }
       }
     }
+    return channelIds
   }
 
   // ToDo: Needs some DRYing
@@ -235,6 +247,26 @@ class AMQPPool extends EventEmitter {
     }
     return channels;
   }
+  async removeChannelById(id){
+    let promises = []
+    for (let connectionIndex in this.connections) {
+      for (let channelIndex in this.connections[connectionIndex].channels) {
+        if (this.connections[connectionIndex].channels[channelIndex]._id === id) {
+          promises.push(
+            new Promise( (resolve) => {
+              this.connections[connectionIndex].channels[channelIndex].once('close', () => {
+                this.connections[connectionIndex].channels.splice(channelIndex, 1);
+                resolve(channelIndex)
+              })
+              this.connections[connectionIndex].channels[channelIndex]?.close()
+            })
+          )
+                    
+        }
+      }
+    }
+    return Promise.all(promises)
+  }
 
   createConnection(url, connectionConfig){
     let connection = new Connection(url, connectionConfig);
@@ -267,6 +299,9 @@ class AMQPPool extends EventEmitter {
     });
     channel.on('info', (msg) => this.emit('info', msg));
     connection.addChannel(channel);
+    if(connection.alive)
+      channel.create();
+    return channel._id
   }
 }
 
