@@ -95,12 +95,16 @@ class AMQPPool extends EventEmitter {
       }
     }, msgCacheInterval);
   }
-
+  
   async stop() {
     let promises = []
-    for (let _connection of this.connections) {
+    for (const [connectionIndex, _connection] of this.connections.entries()) {
       promises.push(
         new Promise( (resolve) => {
+          if(!_connection.alive){
+              this.connections.splice(connectionIndex, 1);
+              return resolve(connectionIndex)
+          }
         _connection.once('close', () => {
           this.connections.splice(connectionIndex, 1);
           resolve(connectionIndex)
