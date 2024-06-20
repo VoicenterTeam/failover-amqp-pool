@@ -78,6 +78,13 @@ class Channel extends EventEmitter {
       noLocal: this?.queue?.options?.noLocal
     }
   }
+  clean(){
+    if(this.messages.size){
+      this.emit({message: 'cleaning unHandled messages', messages: this.messages});
+      this.messages = new Map();
+    }
+    
+  }
   close(){
     if(this.alive){
       this.#isAlive = false;
@@ -87,6 +94,7 @@ class Channel extends EventEmitter {
     }
   }
   async #createChannel(){
+    this.clean();
     if (this.connection.alive) {
       this.#isConnecting = true;
       return this.connection.amqpConnection.createConfirmChannel()
@@ -114,7 +122,7 @@ class Channel extends EventEmitter {
       }
   }
   create() {
-   this.#createChannel()
+    this.#createChannel()
     .then(() => {
           if (this?.exchange?.name && this?.exchange?.type) {
             return this.amqpChannel.assertExchange(this.exchange.name, this.exchange.type, this.exchangeOptions).catch( error => {
@@ -159,7 +167,7 @@ class Channel extends EventEmitter {
         });
   }
   #createQueue(queue, options){
-       return this.amqpChannel.checkQueue(queue).then(assertion => {
+      return this.amqpChannel.checkQueue(queue).then(assertion => {
           if(assertion.queue){
             this.queue.name = assertion.queue;
             return true;
