@@ -25,6 +25,7 @@ class Channel extends EventEmitter {
     this.msg = channelConfig.msg
     this._cacheAck = [];
     this.autoConsume = channelConfig?.autoConsume || false;
+    this.messages = new Map();
     
 
     if (channelConfig.hasOwnProperty('prefetch')  && channelConfig.prefetch) {
@@ -233,6 +234,9 @@ class Channel extends EventEmitter {
           } else {
             m.properties.channelId = this._id;
             m.properties.queue = queue
+            if(!m.properties.messageId) m.properties.messageId = nanoId();
+            this.messages.set(m.properties.messageId, m);
+            
             this.metrics?.metric(METRICS_NAMES.consumeSuccessRate)?.mark()
             this.emit('message', m);
             this.emit('channelMessage', m)
@@ -246,17 +250,23 @@ class Channel extends EventEmitter {
 
   ack(msg) {
     if (msg) {
-      if (this.alive) {
-        this.amqpChannel.ack(msg);
+      let messageId = msg?.properties?.messageId || msg;
+      const m = this.messages.get(messageId);
+      if (this.alive && m) {
+        this.amqpChannel.ack(m);
         this.metrics?.metric(METRICS_NAMES.ackSuccessRate)?.mark()
+        this.messages.delete(messageId);
       }
     }
   }
 
   nack(msg) {
     if (msg) {
+      let messageId = msg?.properties?.messageId || msg;
+      const m = this.messages.get(messageId);
       if (this.alive) {
-        this.amqpChannel.nack(msg);
+        this.amqpChannel.nack(m);
+        this.messages.delete(messageId);
       }
     }
   }
