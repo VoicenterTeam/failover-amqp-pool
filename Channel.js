@@ -63,7 +63,7 @@ class Channel extends EventEmitter {
     return {
       exclusive: this?.queue?.options?.exclusive || false,
       durable: this?.queue?.options?.durable || false,
-      arguments: this?.queue?.options?.arguments || {},
+      arguments: this?.queue?.options?.arguments || { "x-consumer-timeout": 7200000 },
       noAck: !this.prefetch,
       expires: this?.queue?.options?.expires,
       messageTtl: messageTtl ,
