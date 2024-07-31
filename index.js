@@ -50,6 +50,7 @@ class AMQPPool extends EventEmitter {
     super();
     this.connections = [];
     this.msgCache= [];
+    this.interval;
 
     // round_robin
     this.rr_i = 0;
@@ -67,7 +68,8 @@ class AMQPPool extends EventEmitter {
     // Metrics used to work with connections
   }
   start(msgCacheInterval = 2000) {
-    setInterval(() => {
+    this.interval = setInterval(() => {
+      let aliveChannels = this.getAllChannels().length
       this.metrics.metric({
         type: 'gauge',
         name: 'rabbit_message_cached_count', 
@@ -81,7 +83,7 @@ class AMQPPool extends EventEmitter {
       this.metrics.metric({
         type: 'gauge',
         name: 'rabbit_alive_channels_count',
-        value: () => (this.getAliveChannels()).length,
+        value: () => aliveChannels
       })
       this.metrics.metric({
         type: 'gauge',
@@ -89,7 +91,7 @@ class AMQPPool extends EventEmitter {
         value: () => this.connections.length,
       })
 
-      if (this.msgCache.length > 0 && this.getAliveChannels().length > 0) {
+      if (this.msgCache.length > 0 && aliveChannels > 0) {
         let m = this.msgCache.shift();
         this.publish(m.msg, m.filter, m.topic, m.props);
       }
@@ -98,6 +100,7 @@ class AMQPPool extends EventEmitter {
   
   async stop() {
     let promises = []
+    clearInterval(this.interval);
     for (const [connectionIndex, _connection] of this.connections.entries()) {
       promises.push(
         new Promise( (resolve) => {
@@ -135,6 +138,7 @@ class AMQPPool extends EventEmitter {
     }
     return channelIds
   }
+  
 
   // ToDo: Needs some DRYing
   publish(msg, filter, topic, props) {

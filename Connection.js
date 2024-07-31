@@ -15,7 +15,7 @@ class Connection extends EventEmitter {
     this.channels = [];
     this.amqpConnection = null;
     this.alive = false;
-    this.reconnectInterval = this.config.reconnectInterval  || 500
+    this.reconnectInterval = this.config.reconnectInterval  || 1500
     this.timeout = this.config?.timeout || 5000
     this.connection_name = this.config?.connection_name || 'amqp_pool_client_' + os.hostname
     this.metrics = new Metrics(this.URL.host)
@@ -40,17 +40,17 @@ class Connection extends EventEmitter {
           this.amqpConnection = connection;
           this.amqpConnection.on('close', (e) => {
             this.alive = false;
-            setTimeout(() => {
+            let timeOutReconnect = setTimeout(() => {
+                clearTimeout(timeOutReconnect)
                 if(this.reconnectOnClose)
-                this.start();
-            }, 1000);
+                  this.start();
+            }, this.reconnectInterval);
 
-            this.emit('close', this);
+            this.emit('close', { msg: "connection closed", url: this.url});
           });
-          this.amqpConnection.on('error', (e) => {
+          this.amqpConnection.on('error', (error) => {
             this.metrics?.metric(METRICS_NAMES.errorRate)?.mark()
-            this.emit('error', e)
-            // this.alive = false;
+            this.emit('error', { error: error , url: this.url})
           });
           this.alive = true;
           this.emit('info', {message: 'Connection created', url: this.url});
@@ -64,8 +64,9 @@ class Connection extends EventEmitter {
           this.alive = false;
           this.metrics.metric(METRICS_NAMES.errorRate).mark()
           this.emit('error', { error: error , url: this.url})
-          setTimeout(() => {
-          this.metrics?.metric(METRICS_NAMES.reconnectedConnectionsCount)?.inc()
+          let timeout = setTimeout(() => {
+            clearTimeout(timeout);
+            this.metrics?.metric(METRICS_NAMES.reconnectedConnectionsCount)?.inc()
             this.start();
           }, this.reconnectInterval);
         });
@@ -76,7 +77,7 @@ class Connection extends EventEmitter {
       try {
         channel.create()
       } catch (error) {
-        
+          this.emit('error', { error: error , url: this.url})
       }
       
     })
@@ -96,6 +97,8 @@ class Connection extends EventEmitter {
     this.reconnectOnClose = false;
     if (this.amqpConnection) {
       this.amqpConnection.close();
+      this.amqpConnection = undefined;
+      this.channels = [];
     }
   }
 
