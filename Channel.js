@@ -226,7 +226,7 @@ class Channel extends EventEmitter {
           this.queue.name = m.queue 
           this.emit('info', `Queue created dynamic: ${this.queue.name}`)
           this.#bindQueue(this.queue.name, this.exchange.name, this?.binding?.pattern || '', this?.binding?.options || {}).then( b => {
-            this.emit('info', `consume from queue: ${this.queue.name}`)
+            this.emit('info', {message: `consume from queue: ${this.queue.name}`})
             this.consume();
           });
         }).catch(e => {
