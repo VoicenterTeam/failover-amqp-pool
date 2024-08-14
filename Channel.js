@@ -80,7 +80,7 @@ class Channel extends EventEmitter {
   }
   clean(){
     if(this.messages.size){
-      this.emit({message: 'cleaning unHandled messages', messages: this.messages});
+      this.emit('error', {message: 'cleaning unHandled messages', messages: this.messages});
       this.messages = new Map();
     }
     
