@@ -233,7 +233,7 @@ class Channel extends EventEmitter {
           this.emit('error', e)
         })
       }else {
-        this.emit('info', `consume started on queue: ${queue}`)
+        this.emit('info', {message: `consume started on queue: ${queue}`})
         this.amqpChannel.consume(this.queue.name, (m) => {
           if (m == null) {
             this.amqpChannel.close();
