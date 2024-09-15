@@ -126,11 +126,11 @@ class Channel extends EventEmitter {
     .then(() => {
           if (this?.exchange?.name && this?.exchange?.type) {
             return this.amqpChannel.assertExchange(this.exchange.name, this.exchange.type, this.exchangeOptions).catch( error => {
-              this.emit('error', {message: 'cant assert a exchange ' + error?.message, err: error})
               if(error.code === 406 && error.classId === 40){
                 this.emit('info', {message: `Durable Escape for connect`})
                 return this.#createChannel();
               }
+              this.emit('error', {message: 'cant assert a exchange ' + error?.message, err: error})
             });
           }
           if (this?.exchange?.name) {
