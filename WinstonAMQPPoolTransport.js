@@ -7,6 +7,7 @@ class WinstonAMQPPoolTransport extends Transport {
         this.strategy = opts.strategy || 'all';
         this.topic = opts.topic || '';
         this.client = new Pool(opts.pool);
+        this.useSymbol = opts.useSymbol;
         this.client.on('error', (err) => {
             //
         })
@@ -14,8 +15,15 @@ class WinstonAMQPPoolTransport extends Transport {
 
     }
     log(info, callback) {
+        let message;
+        if(this.useSymbol){
+            message = info[Symbol.for('message')];
+        }else{
+            message = JSON.stringify(info)
+        }
+            
         try {
-            this.client.publish(JSON.stringify(info), this.strategy, this.topic);
+            this.client.publish(message, this.strategy, this.topic);
         }catch (e) {
             console.error(e)
         }
