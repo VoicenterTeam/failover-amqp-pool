@@ -101,6 +101,7 @@ class AMQPPool extends EventEmitter {
   async stop() {
     let promises = []
     clearInterval(this.interval);
+    this.removeAllListeners();
     for (const [connectionIndex, _connection] of this.connections.entries()) {
       promises.push(
         new Promise( (resolve) => {

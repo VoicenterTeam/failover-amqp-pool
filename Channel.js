@@ -25,7 +25,6 @@ class Channel extends EventEmitter {
     this.msg = channelConfig.msg
     this._cacheAck = [];
     this.autoConsume = channelConfig?.autoConsume || false;
-    this.messages = new Map();
     
 
     if (channelConfig.hasOwnProperty('prefetch')  && channelConfig.prefetch) {
@@ -78,13 +77,6 @@ class Channel extends EventEmitter {
       noLocal: this?.queue?.options?.noLocal
     }
   }
-  clean(){
-    if(this.messages.size){
-      this.emit('error', {message: 'cleaning unHandled messages', messages: this.messages});
-      this.messages = new Map();
-    }
-    
-  }
   close(){
     if(this.alive){
       this.#isAlive = false;
@@ -94,7 +86,6 @@ class Channel extends EventEmitter {
     }
   }
   async #createChannel(){
-    this.clean();
     if (this.connection.alive) {
       this.#isConnecting = true;
       return this.connection.amqpConnection.createConfirmChannel()
@@ -243,7 +234,7 @@ class Channel extends EventEmitter {
             m.properties.channelId = this._id;
             m.properties.queue = queue
             if(!m.properties.messageId) m.properties.messageId = nanoId();
-            this.messages.set(m.properties.messageId, m);
+            if(!m.properties.timestamp) m.properties.timestamp = Math.round(new Date().getTime()/1000);
             
             this.metrics?.metric(METRICS_NAMES.consumeSuccessRate)?.mark()
             this.emit('message', m);
@@ -258,23 +249,27 @@ class Channel extends EventEmitter {
 
   ack(msg) {
     if (msg) {
-      let messageId = msg?.properties?.messageId || msg;
-      const m = this.messages.get(messageId);
-      if (this.alive && m) {
-        this.amqpChannel.ack(m);
-        this.metrics?.metric(METRICS_NAMES.ackSuccessRate)?.mark()
-        this.messages.delete(messageId);
+      let messageId = msg?.properties?.messageId || msg?.messageId;
+      let timestamp = msg?.properties?.timestamp || msg?.timestamp;
+      let deliveryTag = msg?.fields?.deliveryTag;
+      
+
+      if(this.alive && deliveryTag){
+        this.amqpChannel.ack(msg);
+        this.metrics?.metric(METRICS_NAMES.ackSuccessRate)?.mark();
+      }else {
+        this.emit('error', {message: `DELIVERY TAG NOT FOUND ${messageId}`, channel: this, msg: msg});
       }
     }
   }
 
   nack(msg) {
     if (msg) {
-      let messageId = msg?.properties?.messageId || msg;
-      const m = this.messages.get(messageId);
-      if (this.alive) {
-        this.amqpChannel.nack(m);
-        this.messages.delete(messageId);
+
+      let deliveryTag = msg?.fields?.deliveryTag;
+
+      if (this.alive && deliveryTag) {
+        this.amqpChannel.nack(msg);
       }
     }
   }
@@ -292,5 +287,4 @@ class Channel extends EventEmitter {
     this.amqpChannel.sendToQueue(queue, message)
   }
 }
-
 module.exports = Channel;
