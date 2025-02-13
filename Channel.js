@@ -1,5 +1,5 @@
 const EventEmitter = require('events').EventEmitter,
-      nanoId = require('nanoid'),
+      uuid = require('uuid').v4,
       hash = require('object-hash'),
       os = require('os'),
       probe = require('@pm2/io'),
@@ -11,7 +11,7 @@ class Channel extends EventEmitter {
   constructor(connection, channelConfig) {
     super();
     this.hash = hash(channelConfig)
-    this._id = nanoId();
+    this._id = this.#createID();
     this.connection = connection;
     this.amqpChannel = null;
     this.directives = ["ea", "qa"];
@@ -85,11 +85,17 @@ class Channel extends EventEmitter {
       this.amqpChannel?.close()
     }
   }
+  #createID(){
+    return `${os.hostname}.${uuid()}`
+  }
   async #createChannel(){
     if (this.connection.alive) {
       this.#isConnecting = true;
       return this.connection.amqpConnection.createConfirmChannel()
         .then((amqpChannel) => {
+          let old_id = this._id;
+          this._id = this.#createID();
+          this.emit('info', {message: `Channel created`, id: this._id, old_id})
           this.amqpChannel = amqpChannel;
           this.amqpChannel.on('close', () => {
             this.alive = false;
@@ -142,11 +148,6 @@ class Channel extends EventEmitter {
           return true;
         })
         .then(() => {
-          this.removeAllListeners('message');
-          this.alive = true;
-          this.emit('info', {message: 'channel created', id: this._id})
-          this.emit('ready', this);
-          if(this.autoConsume) this.consume()
           return true;
         })
         .catch((err) => {
@@ -155,6 +156,10 @@ class Channel extends EventEmitter {
           return this.connection
         }).finally( _ => {
           this.#isConnecting = false;
+          this.alive = true;
+          this.emit('info', {message: 'channel created', id: this._id})
+          this.emit('ready', this);
+          if(this.autoConsume) this.consume()
         });
   }
   #createQueue(queue, options){
@@ -191,10 +196,8 @@ class Channel extends EventEmitter {
   } 
   publish(msg, topic = this.topic, options = this.options) {
     if (msg) {
-      if(msg instanceof Object){
-        Object.assign(msg, this.msg);
-        msg = JSON.stringify(msg)
-      }
+
+      options.messageId = options?.messageId || uuid();
       options.messageId = options?.messageId || nanoId();
       options.timestamp = options?.timestamp || Math.round(new Date().getTime()/1000);
       if (this.alive) {
@@ -232,15 +235,14 @@ class Channel extends EventEmitter {
             this.emit('error', {message: 'Message is null', channel: this, m: m})
           } else {
             m.properties.channelId = this._id;
-            m.properties.queue = queue
-            if(!m.properties.messageId) m.properties.messageId = nanoId();
+            if(!m.properties.messageId) m.properties.messageId = uuid();
             if(!m.properties.timestamp) m.properties.timestamp = Math.round(new Date().getTime()/1000);
             
             this.metrics?.metric(METRICS_NAMES.consumeSuccessRate)?.mark()
             this.emit('message', m);
             this.emit('channelMessage', m)
           }
-        });
+        }, {consumerTag: this._id});
       }
     } else {
       this.emit('error', {message: 'channel is dead!', channel: this})
@@ -252,9 +254,10 @@ class Channel extends EventEmitter {
       let messageId = msg?.properties?.messageId || msg?.messageId;
       let timestamp = msg?.properties?.timestamp || msg?.timestamp;
       let deliveryTag = msg?.fields?.deliveryTag;
-      
-
-      if(this.alive && deliveryTag){
+      if(!this.alive){
+        this.emit('error', {message: 'channel is dead!', channel: this});
+      }
+      else if(deliveryTag){
         this.amqpChannel.ack(msg);
         this.metrics?.metric(METRICS_NAMES.ackSuccessRate)?.mark();
       }else {
