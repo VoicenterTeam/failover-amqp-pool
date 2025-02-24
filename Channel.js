@@ -196,7 +196,10 @@ class Channel extends EventEmitter {
   } 
   publish(msg, topic = this.topic, options = this.options) {
     if (msg) {
-
+      if(msg instanceof Object){
+        Object.assign(msg, this.msg);
+        msg = JSON.stringify(msg)
+      }
       options.messageId = options?.messageId || uuid();
       options.messageId = options?.messageId || nanoId();
       options.timestamp = options?.timestamp || Math.round(new Date().getTime()/1000);
