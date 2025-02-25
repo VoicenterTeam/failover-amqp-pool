@@ -17,7 +17,7 @@ class Connection extends EventEmitter {
     this.alive = false;
     this.reconnectInterval = this.config.reconnectInterval  || 1500
     this.timeout = this.config?.timeout || 5000
-    this.connection_name = this.config?.connection_name || 'amqp_pool_client_' + os.hostname
+    this.connection_name = (this.config?.connection_name || 'amqp_pool_client') + `_${os.hostname}`
     this.metrics = new Metrics(this.URL.host)
     this.reconnectOnClose = true;
   }
