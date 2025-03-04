@@ -240,6 +240,7 @@ class Channel extends EventEmitter {
             m.properties.channelId = this._id;
             if(!m.properties.messageId) m.properties.messageId = uuid();
             if(!m.properties.timestamp) m.properties.timestamp = Math.round(new Date().getTime()/1000);
+            m.properties.queue = this.queue.name;
             
             this.metrics?.metric(METRICS_NAMES.consumeSuccessRate)?.mark()
             this.emit('message', m);
