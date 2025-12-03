@@ -2,7 +2,6 @@ const EventEmitter = require('events').EventEmitter,
       uuid = require('uuid').v4,
       hash = require('object-hash'),
       os = require('os'),
-      probe = require('@pm2/io'),
       METRICS_NAMES = require('./metrics/names')
 
 class Channel extends EventEmitter {

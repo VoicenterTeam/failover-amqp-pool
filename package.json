@@ -1,7 +1,7 @@
 {
   "name": "@voicenter-team/failover-amqp-pool",
-  "version": "2.2.22",
-  "description": "amqp pool client",
+  "version": "2.3.0",
+  "description": "amqp pool client with Node.js and Bun support",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
@@ -13,16 +13,21 @@
   "keywords": [
     "amqp",
     "pool",
-    "client"
+    "client",
+    "rabbitmq",
+    "bun",
+    "metrics"
   ],
   "author": "Maksym Kyrylov",
   "license": "MIT",
   "homepage": "https://github.com/VoicenterTeam/failover-amqp-pool",
   "dependencies": {
-    "@pm2/io": "^5.0.2",
     "amqplib": "0.10.3",
     "nanoid": "^2.1.11",
     "object-hash": "^3.0.0",
     "uuid": "^11.0.5"
+  },
+  "optionalDependencies": {
+    "@pm2/io": "^5.0.2"
   }
 }
