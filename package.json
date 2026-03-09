@@ -1,6 +1,6 @@
 {
   "name": "@voicenter-team/failover-amqp-pool",
-  "version": "2.2.22",
+  "version": "2.3.10",
   "description": "amqp pool client",
   "main": "index.js",
   "scripts": {
@@ -20,9 +20,9 @@
   "homepage": "https://github.com/VoicenterTeam/failover-amqp-pool",
   "dependencies": {
     "@pm2/io": "^5.0.2",
-    "amqplib": "0.10.3",
-    "nanoid": "^2.1.11",
+    "amqplib": "^0.10.9",
+    "nanoid": "^5.1.6",
     "object-hash": "^3.0.0",
-    "uuid": "^11.0.5"
+    "uuid": "^13.0.0"
   }
 }
