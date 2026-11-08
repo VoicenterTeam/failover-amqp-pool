@@ -39,7 +39,9 @@ A robust AMQP client with connection pooling, automatic failover, and Winston tr
   If you encoded them yourself (for example `%2F` for `/`, `%40` for `@`), configure the raw
   value instead: an encoded value is encoded again, the login is refused with `ACCESS_REFUSED`
   (or the vhost is not found) and the pool retries forever. Write `vhost` as `/` for the
-  default vhost or `/name`; the leading `/` is optional.
+  default vhost or `/name`; the leading `/` is optional. For example `vhost: '/%2F'`, the URI
+  form of the default vhost, must become `vhost: '/'`. A vhost that is not found surfaces only
+  as amqplib's `Expected ConnectionOpenOk; got <ConnectionClose channel:0>` error.
 - `'ready'`/`'recreated'` are not emitted when a create fails. A failed create leaves the
   channel not alive, emits an `'info'` event
   `{ message: 'channel create failed', channelId, queue, exchange, error }` (no

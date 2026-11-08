@@ -365,3 +365,14 @@ test("a late 'close' or 'error' from a replaced amqplib channel does not mark th
   assert.strictEqual(closes, 0, "no 'close' re-emitted");
   assert.strictEqual(errors.length, errorsBefore, "no 'error' re-emitted");
 });
+
+test('a non-string vhost builds its path instead of throwing', async () => {
+  const pool = new AMQPPool([{
+    connection: { host: '127.0.0.1', port: 1, username: 'u', password: 'p', vhost: 5, ssl: false, reconnectInterval: 1 },
+    channel: { exchange: { name: 'x' } }
+  }]);
+  const refused = new Promise(r => pool.on('error', r));
+  pool.connections.forEach(c => { c.start = () => {}; });   // nothing listens on port 1; end the reconnect loop
+  assert.strictEqual(new URL(pool.connections[0].url).pathname, '/5');
+  await refused;   // the connect attempt already started ends before the test does
+});
