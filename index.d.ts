@@ -41,7 +41,11 @@ declare interface ConnectionConf {
     username: string,
     password: string,
     vhost?: string,
-    heartbeat?: number
+    heartbeat?: number,
+    /** Connection reconnect interval, and the first wait before retrying a failed channel create (ms, default 1500) */
+    reconnectInterval?: number,
+    /** Ceiling for the channel create retry wait, which doubles per consecutive failure (ms, default 30000) */
+    channelRetryMaxInterval?: number
 }
 
 declare interface ChannelConf {

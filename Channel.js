@@ -14,6 +14,7 @@ class Channel extends EventEmitter {
   #readyEmitted = false;
   #consumingOn = null;
   #retryTimer = null;
+  #retryDelay = 0;
   constructor(connection, channelConfig) {
     super();
     this.hash = hash(channelConfig)
@@ -45,8 +46,8 @@ class Channel extends EventEmitter {
   }
 
   get alive(){
-    // a failed create already has its retry scheduled
-    if(!this.#isAlive && !this.#isConnecting && !this.#retryTimer)
+    // a failed create already has its retry scheduled; a dead connection re-creates its channels on reconnect
+    if(!this.#isAlive && !this.#isConnecting && !this.#retryTimer && this.connection.alive)
       this.create();
     return this.#isAlive;
   }
@@ -124,7 +125,7 @@ class Channel extends EventEmitter {
       }
       else {
         this.emit('error', { message: 'my connection is dead!!!'})
-        throw new Error('my connection is dead!!!' + this.connection.url)
+        throw new Error('my connection is dead!!!')
       }
   }
   create() {
@@ -173,16 +174,22 @@ class Channel extends EventEmitter {
           clearTimeout(this.#retryTimer);
           this.#retryTimer = null;
           if (!created) {
-            // retry while the connection is up; a dead connection re-creates its channels on reconnect
+            try { this.amqpChannel?.close()?.catch?.(() => {}); } catch (e) {}   // already closed
+            // retry while the connection is up; a dead connection re-creates its channels on reconnect.
+            // The wait doubles per consecutive failure, from reconnectInterval up to channelRetryMaxInterval.
             if (this.connection.alive) {
+              const max = this.connection.config?.channelRetryMaxInterval || 30000;
+              const delay = Math.min(this.#retryDelay || this.connection.reconnectInterval || 1500, max);
+              this.#retryDelay = Math.min(delay * 2, max);
               this.#retryTimer = setTimeout(() => {
                 this.#retryTimer = null;
                 if (this.connection.alive) this.create();
-              }, this.connection.reconnectInterval || 1500);
+              }, delay);
               this.#retryTimer.unref?.();
             }
             return;
           }
+          this.#retryDelay = 0;
           this.alive = true;
           this.emit('info', {message: 'channel created', id: this._id})
           // 'ready' fires once per Channel; a re-create emits 'recreated' so 'ready' listeners

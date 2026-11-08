@@ -22,7 +22,7 @@ class FakeAmqpChannel extends EventEmitter {
   }
   ack(msg) { this.acks.push(msg.fields.deliveryTag); }
   nack(msg) { this.nacks.push(msg.fields.deliveryTag); }
-  close() { this.emit('close'); }
+  close() { this.closed = true; this.emit('close'); }
   deliver(body) {
     const m = { content: Buffer.from(body), fields: { deliveryTag: ++this.tag }, properties: {} };
     this.consumers.forEach(c => c.cb(m));
@@ -281,5 +281,66 @@ test('checkQueue 404 then assertQueue failure fails the create, no unhandled rej
   assert.strictEqual(readyCount, 0);
   assert.strictEqual(channel.alive, false);
   assert.strictEqual(amqpChannels.length, 2, 'checkQueue channel plus the assertQueue channel');
+  channel.close();
+});
+
+// review round 1
+test('a create on a dead connection emits no URL or password', async () => {
+  const { channel, connection, errors, infos } = setup();
+  connection.url = 'amqp://user:s3cret@broker:5672';
+  connection.alive = false;
+  const failed = created(channel);
+  channel.create();
+  await failed;
+  const events = [...errors, ...infos].filter(e => e?.message === 'cant establish a channel' || e?.message === 'channel create failed');
+  assert.strictEqual(events.length, 2);
+  for (const e of events) {
+    const text = JSON.stringify(e) + String(e.err?.message) + String(e.err?.stack);
+    assert.ok(!text.includes('amqp://') && !text.includes('s3cret'), 'no URL or password: ' + text);
+  }
+});
+
+test('reading alive while the connection is down starts no create', () => {
+  const { channel, amqpChannels, connection, errors } = setup();
+  connection.alive = false;
+  let creates = 0;
+  channel.create = () => creates++;
+  for (let i = 0; i < 3; i++) channel.ack({ fields: { deliveryTag: 1 }, properties: { messageId: 'm' } });
+  assert.strictEqual(creates, 0, 'Connection.connection() re-creates channels on reconnect');
+  assert.strictEqual(errors.filter(e => e?.message === 'channel is dead!').length, 3);
+  assert.strictEqual(amqpChannels.length, 0);
+});
+
+test('create retries back off exponentially up to channelRetryMaxInterval and reset after success', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { channel, amqpChannels, connection } = setup();
+  connection.reconnectInterval = 100;
+  connection.config = { channelRetryMaxInterval: 500 };
+  const settle = () => created(channel);
+  // the create fails while failNext is set; returns the delay until the next attempt
+  const nextAttempt = async () => {
+    const before = amqpChannels.length;
+    let waited = 0;
+    while (amqpChannels.length === before) {
+      assert.ok(waited <= 1000, 'a retry is scheduled');
+      t.mock.timers.tick(50); waited += 50;
+      await new Promise(r => setImmediate(r));
+    }
+    return waited;
+  };
+  connection.failNext = true;
+  let done = settle(); channel.create(); await done;
+  const delays = [];
+  for (let i = 0; i < 4; i++) {
+    connection.failNext = true;
+    done = settle(); delays.push(await nextAttempt()); await done;
+  }
+  assert.deepStrictEqual(delays, [100, 200, 400, 500], 'doubles from reconnectInterval, capped');
+  assert.ok(amqpChannels.slice(0, -1).every(c => c.closed), 'each failed amqplib channel is closed');
+  done = settle(); delays.push(await nextAttempt()); await done;   // the capped retry succeeds
+  assert.strictEqual(channel.alive, true);
+  connection.failNext = true;   // a later failure starts again from reconnectInterval
+  done = settle(); amqpChannels.at(-1).close(); channel.alive; await done;
+  done = settle(); assert.strictEqual(await nextAttempt(), 100); await done;
   channel.close();
 });

@@ -31,7 +31,7 @@ A robust AMQP client with connection pooling, automatic failover, and Winston tr
 - `'ready'`/`'recreated'` are not emitted when a create fails. A failed create leaves the
   channel not alive, emits an `'info'` event
   `{ message: 'channel create failed', channelId, queue, exchange, error }` (no
-  `'channel created'` info), and retries after `reconnectInterval`.
+  `'channel created'` info), and retries with backoff (see [Channel re-creates](#channel-re-creates)).
 
 ## Installation
 
@@ -240,7 +240,8 @@ amqp.publish(message, 'all', routingKey, {
     vhost: '/',                  // Virtual host
     heartbeat: 25,              // Heartbeat interval in seconds
     timeout: 5000,              // Connection timeout
-    reconnectInterval: 1500     // Reconnection interval on failure
+    reconnectInterval: 1500,    // Reconnection interval on failure, and the first channel create retry wait
+    channelRetryMaxInterval: 30000 // Ceiling for the doubling channel create retry wait
   },
   channel: {
     prefetch: 1,                // Channel prefetch count
@@ -366,10 +367,14 @@ new amqplib channel.
 - `'ready'` and `'recreated'` are emitted only when the create succeeds, and only then does the
   channel re-consume.
 - A failed create (for example a locked or missing queue, a missing exchange, a queue declare
-  the broker refuses) leaves `alive` false and retries once per `reconnectInterval` while the
-  connection is up, one pending retry at a time; reading `alive` meanwhile does not start
-  another create. A dead connection re-creates its channels when it reconnects. `close()`
-  cancels a pending retry.
+  the broker refuses) leaves `alive` false and closes the failed amqplib channel. After each
+  failed attempt the channel waits the current retry interval and tries again, while the
+  connection is up. The interval starts at `reconnectInterval`, doubles after each consecutive
+  failure up to `channelRetryMaxInterval` (default 30000 ms), and resets after a successful
+  create. There is no cap on the number of attempts and only one retry is pending at a time;
+  reading `alive` meanwhile does not start another create. While the connection is down,
+  reading `alive` starts no create: the connection re-creates its channels when it reconnects.
+  `close()` cancels a pending retry.
 
 Before 3.0.0 `'ready'` fired on every re-create. Code that relied on that to call
 `consume()` again keeps working, because the channel now re-consumes on its own.

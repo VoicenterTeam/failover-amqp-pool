@@ -4,7 +4,7 @@
   "description": "amqp pool client",
   "main": "index.js",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test --test-timeout=10000"
   },
   "repository": {
     "type": "git",
