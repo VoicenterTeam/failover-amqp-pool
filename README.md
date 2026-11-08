@@ -15,6 +15,9 @@ A robust AMQP client with connection pooling, automatic failover, and Winston tr
 
 ## Breaking changes in 3.0.0
 
+> Use 3.0.1 or later. The 3.0.0 on npm was packed from an earlier tree and lacks the channel
+> retry backoff, the credential-free urls and the credential encoding described below.
+
 - `'ready'` fires once per channel, on its first successful create. Recovery (a re-create after
   the channel or its connection closed) emits the new `'recreated'` event instead. Code that
   used `'ready'` as a "back up" or health signal must also listen to `'recreated'`
