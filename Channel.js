@@ -107,11 +107,14 @@ class Channel extends EventEmitter {
           this._id = this.#createID();
           this.emit('info', {message: `Channel created`, id: this._id, old_id})
           this.amqpChannel = amqpChannel;
+          // a replaced amqplib channel can still close or error late; only the current one counts
           this.amqpChannel.on('close', () => {
+            if (amqpChannel !== this.amqpChannel) return;
             this.alive = false;
             this.emit('close')
           });
           this.amqpChannel.on('error', (err) => {
+            if (amqpChannel !== this.amqpChannel) return;
             this.alive = false;
             this.emit('error', err);
           });

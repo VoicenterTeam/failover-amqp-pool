@@ -32,6 +32,9 @@ A robust AMQP client with connection pooling, automatic failover, and Winston tr
   `'message published'` info, the pool `'close'` and `'connection'` event argument) no longer
   carry the username and password: `amqp://host:port/vhost?...`. `'my connection is dead!!!'`
   errors carry no URL.
+- The pool `'close'` argument is that credential-free URL, so it does not match
+  `getConnectionIndexByUrl()` (which compares the full URL), and two connections that differ
+  only in username or password look the same in events.
 - `'ready'`/`'recreated'` are not emitted when a create fails. A failed create leaves the
   channel not alive, emits an `'info'` event
   `{ message: 'channel create failed', channelId, queue, exchange, error }` (no
@@ -240,7 +243,7 @@ amqp.publish(message, 'all', routingKey, {
     port: 5672,                  // RabbitMQ port
     ssl: false,                  // Enable SSL/TLS
     username: 'guest',           // Username
-    password: 'guest',           // Password
+    password: 'guest',           // Password (URL-encoded for you; ASCII only, see below)
     vhost: '/',                  // Virtual host
     heartbeat: 25,              // Heartbeat interval in seconds
     timeout: 5000,              // Connection timeout
@@ -286,6 +289,11 @@ amqp.publish(message, 'all', routingKey, {
   }
 }
 ```
+
+`username` and `password` are URL-encoded when the connection URL is built, so characters
+such as `/ ? # @ : % +` and spaces work. Non-ASCII credentials do not: amqplib 0.10 decodes
+URL credentials with `unescape()`, so a password like `pässwörd` reaches RabbitMQ mangled and
+the login is refused. Use ASCII credentials.
 
 ## Winston Transport
 
