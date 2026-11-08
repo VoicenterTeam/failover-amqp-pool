@@ -199,15 +199,26 @@ class AMQPPool extends EventEmitter {
   }
 
   ack(msg) {
-    this.getChannelById(msg.properties.channelId).map((channel) => {
-      channel.ack(msg);
-    });
+    this.#forChannelOf(msg, 'ack');
   }
 
   nack(msg) {
-    this.getChannelById(msg.properties.channelId).map((channel) => {
-      channel.nack(msg);
-    });
+    this.#forChannelOf(msg, 'nack');
+  }
+
+  // channelId changes on every re-create, so no match means the message came on a replaced
+  // channel; the broker already requeued it
+  #forChannelOf(msg, op) {
+    const channels = this.getChannelById(msg.properties.channelId);
+    if (!channels.length) {
+      this.emit('info', {
+        message: `stale ${op} dropped`,
+        messageId: msg.properties.messageId,
+        channelId: msg.properties.channelId,
+        reason: 'no channel with this channelId, it was re-created and the broker requeued the message'
+      });
+    }
+    channels.forEach(channel => channel[op](msg));
   }
 
   getAliveChannels() {
@@ -298,6 +309,7 @@ class AMQPPool extends EventEmitter {
     const connection = this.connections[connectionIndex]
     let channel = new Channel(connection, Channelconfig);
     channel.on('ready', (channel) => this.emit('ready', channel));
+    channel.on('recreated', (channel) => this.emit('recreated', channel));
     channel.on('close', (close) => this.emit('close', close));
     channel.on('error', (error) => this.emit('error', error));
     channel.on('channelMessage', (msg) => {

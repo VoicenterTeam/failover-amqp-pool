@@ -13,6 +13,22 @@ A robust AMQP client with connection pooling, automatic failover, and Winston tr
 - Configurable queue and exchange settings
 - Flexible message consumption patterns
 
+## Breaking changes in 3.0.0
+
+- `'ready'` fires once per channel, on its first successful create. Recovery (a re-create after
+  the channel or its connection closed) emits the new `'recreated'` event instead. Code that
+  used `'ready'` as a "back up" or health signal must also listen to `'recreated'`
+  (see [Health flag](#health-flag)).
+- A channel that was consuming re-consumes by itself after a re-create, and `consume()` is
+  idempotent per amqplib channel. A consumer that deliberately stopped consuming after a
+  re-create now resumes.
+- `ack()`/`nack()` of a message delivered on a previous channel is dropped with an `'info'`
+  event `{ message: 'stale ack dropped' | 'stale nack dropped', messageId, channelId, reason }`,
+  on both the channel and the pool.
+- `'channel is dead!'` errors carry `{ message, channelId, queue, exchange }` instead of the
+  `Channel` object (the `channel` key is gone).
+- `'ready'`/`'recreated'` are not emitted when a create fails.
+
 ## Installation
 
 ```bash
@@ -299,6 +315,10 @@ amqp.on('ready', (channel) => {
   console.log('Channel ready:', channel._id);
 });
 
+amqp.on('recreated', (channel) => {
+  console.log('Channel re-created:', channel._id);
+});
+
 amqp.on('close', (info) => {
   console.log('Connection closed:', info);
 });
@@ -307,6 +327,45 @@ amqp.on('channelMessage', (msg) => {
   console.log('Message received:', msg.content.toString());
 });
 ```
+
+### Health flag
+
+`'ready'` fires once per channel, so a health flag needs both events to come back up:
+
+```javascript
+let healthy = false;
+amqp.on('ready', () => { healthy = true; });
+amqp.on('recreated', () => { healthy = true; });
+amqp.on('close', () => { healthy = false; });
+```
+
+### Channel re-creates
+
+When a channel or its connection closes, the pool re-creates the same `Channel` object on a
+new amqplib channel.
+
+- `'ready'` fires once per `Channel`, on its first create. Attaching `channel.on('message', ...)`
+  inside a `'ready'` listener is safe: the listener runs once, so handlers do not stack up.
+- `'recreated'` fires with the same `Channel` after each later re-create. Nothing needs to be
+  done in it: a channel that was consuming (`autoConsume`, or `consume()` called once) resumes
+  consuming on the new channel by itself, and its `'message'` listeners keep working.
+  `consume()` is idempotent per amqplib channel, so calling it again is harmless.
+- Messages that were unacked when the old channel closed are requeued by RabbitMQ and come
+  back with `fields.redelivered === true`. Delivery tags belong to the channel that delivered
+  them, so `ack()`/`nack()` of a message from the old channel is dropped (it would make
+  RabbitMQ close the new channel with `406 PRECONDITION_FAILED unknown delivery tag`) and an
+  `'info'` event is emitted instead:
+  `{ message: 'stale ack dropped', messageId, channelId, reason }` (`'stale nack dropped'` for
+  `nack()`). This holds for `channel.ack()`/`channel.nack()` and for `amqp.ack()`/`amqp.nack()`;
+  the pool finds no channel for the old `channelId` and emits the same event.
+  Handle the redelivered copy like any other message.
+- `'ready'` and `'recreated'` are emitted only when the create succeeds, and only then does the
+  channel re-consume.
+
+Before 3.0.0 `'ready'` fired on every re-create. Code that relied on that to call
+`consume()` again keeps working, because the channel now re-consumes on its own.
+
+`'channel is dead!'` errors carry `{ message, channelId, queue, exchange }`, not the `Channel`.
 
 ## Graceful Shutdown
 
