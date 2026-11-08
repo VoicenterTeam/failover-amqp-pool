@@ -25,9 +25,17 @@ A robust AMQP client with connection pooling, automatic failover, and Winston tr
 - `ack()`/`nack()` of a message delivered on a previous channel is dropped with an `'info'`
   event `{ message: 'stale ack dropped' | 'stale nack dropped', messageId, channelId, reason }`,
   on both the channel and the pool.
-- `'channel is dead!'` errors carry `{ message, channelId, queue, exchange }` instead of the
-  `Channel` object (the `channel` key is gone).
-- `'ready'`/`'recreated'` are not emitted when a create fails.
+- `'channel is dead!'` and `'Message is null'` errors carry `{ message, channelId, queue, exchange }`,
+  and `'DELIVERY TAG NOT FOUND ...'` errors the same plus `messageId`, instead of the `Channel`
+  object (the `channel`, `m` and `msg` keys are gone).
+- URLs in emitted events (`url` in connection `'info'`/`'error'`/`'close'` events and in
+  `'message published'` info, the pool `'close'` and `'connection'` event argument) no longer
+  carry the username and password: `amqp://host:port/vhost?...`. `'my connection is dead!!!'`
+  errors carry no URL.
+- `'ready'`/`'recreated'` are not emitted when a create fails. A failed create leaves the
+  channel not alive, emits an `'info'` event
+  `{ message: 'channel create failed', channelId, queue, exchange, error }` (no
+  `'channel created'` info), and retries with backoff (see [Channel re-creates](#channel-re-creates)).
 
 ## Installation
 
@@ -236,7 +244,8 @@ amqp.publish(message, 'all', routingKey, {
     vhost: '/',                  // Virtual host
     heartbeat: 25,              // Heartbeat interval in seconds
     timeout: 5000,              // Connection timeout
-    reconnectInterval: 1500     // Reconnection interval on failure
+    reconnectInterval: 1500,    // Reconnection interval on failure, and the first channel create retry wait
+    channelRetryMaxInterval: 30000 // Ceiling for the doubling channel create retry wait
   },
   channel: {
     prefetch: 1,                // Channel prefetch count
@@ -361,11 +370,22 @@ new amqplib channel.
   Handle the redelivered copy like any other message.
 - `'ready'` and `'recreated'` are emitted only when the create succeeds, and only then does the
   channel re-consume.
+- A failed create (for example a locked or missing queue, a missing exchange, a queue declare
+  the broker refuses) leaves `alive` false and closes the failed amqplib channel. After each
+  failed attempt the channel waits the current retry interval and tries again, while the
+  connection is up. The interval starts at `reconnectInterval`, doubles after each consecutive
+  failure up to `channelRetryMaxInterval` (default 30000 ms), and resets after a successful
+  create. There is no cap on the number of attempts and only one retry is pending at a time;
+  reading `alive` meanwhile does not start another create. While the connection is down,
+  reading `alive` starts no create: the connection re-creates its channels when it reconnects.
+  `close()` cancels a pending retry.
 
 Before 3.0.0 `'ready'` fired on every re-create. Code that relied on that to call
 `consume()` again keeps working, because the channel now re-consumes on its own.
 
-`'channel is dead!'` errors carry `{ message, channelId, queue, exchange }`, not the `Channel`.
+`'channel is dead!'` and `'Message is null'` errors carry `{ message, channelId, queue, exchange }`,
+and `'DELIVERY TAG NOT FOUND ...'` errors add `messageId`; none carries the `Channel` or the
+connection URL.
 
 ## Graceful Shutdown
 

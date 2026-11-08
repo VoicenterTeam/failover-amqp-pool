@@ -215,7 +215,7 @@ class AMQPPool extends EventEmitter {
         message: `stale ${op} dropped`,
         messageId: msg.properties.messageId,
         channelId: msg.properties.channelId,
-        reason: 'no channel with this channelId, it was re-created and the broker requeued the message'
+        reason: 'no channel with this channelId'
       });
     }
     channels.forEach(channel => channel[op](msg));
@@ -291,7 +291,7 @@ class AMQPPool extends EventEmitter {
   createConnection(url, connectionConfig){
     let connection = new Connection(url, connectionConfig);
     connection.on('close', () => {
-      this.emit('close', url)
+      this.emit('close', connection.safeUrl)
       connection?.metrics?.metric(METRICS_NAMES.reconnectedConnectionsCount)?.inc()
     });
     connection.on('error', (error) => {
@@ -299,7 +299,7 @@ class AMQPPool extends EventEmitter {
       this.emit('error', error)
     })
     connection.on('info', (info) => this.emit('info', info))
-    connection.on('connection', () => this.emit('connection', url))
+    connection.on('connection', () => this.emit('connection', connection.safeUrl))
     connection.start();
 
     return this.connections.push(connection) - 1;

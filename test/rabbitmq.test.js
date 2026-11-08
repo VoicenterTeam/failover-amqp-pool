@@ -135,3 +135,127 @@ test('control: first ready, consume and ack work', { skip }, async t => {
   assert.deepStrictEqual(handled, ['a', 'b']);
   assert.deepStrictEqual(ctx.errors, []);
 });
+
+// A pool on its own queue config, for create failures the broker produces.
+function poolFor(t, channel) {
+  const u = new URL(URL_);
+  const pool = new AMQPPool([{
+    connection: { host: u.hostname, port: Number(u.port), username: decodeURIComponent(u.username), password: decodeURIComponent(u.password), ssl: false, reconnectInterval: 50 },
+    channel
+  }]);
+  const errors = [];
+  pool.on('error', e => errors.push(e));
+  t.after(async () => {
+    const stopped = pool.stop();
+    pool.on('error', () => {});
+    await stopped.catch(() => {});
+  });
+  return { pool, errors };
+}
+
+test('issue #5: a create that fails on a locked queue stays dead and retries until the queue is free', { skip }, async t => {
+  const queue = `famqp-locked-${process.pid}-${Date.now()}`;
+  const admin = await amqplib.connect(URL_);
+  t.after(() => admin.close().catch(() => {}));
+  const adminCh = await admin.createChannel();
+  await adminCh.assertQueue(queue, { exclusive: true });   // 405 RESOURCE_LOCKED for any other connection
+  const { pool, errors } = poolFor(t, { prefetch: 1, queue: { name: queue, options: { autoDelete: true } } });
+  let ready = 0;
+  pool.on('ready', () => ready++);
+  await until(() => errors.some(e => e?.message === 'cant establish a channel' && e.err?.code === 405));
+  const ch = pool.connections[0].channels[0];
+  assert.strictEqual(ch.alive, false, 'dead after the failed create');
+  assert.strictEqual(ready, 0);
+  await adminCh.deleteQueue(queue);   // the retry now finds no queue, asserts it and succeeds
+  await until(() => ready === 1);
+  assert.strictEqual(ch.alive, true);
+});
+
+test('issue #5: an assertQueue failure after checkQueue 404 fails the create, no ready', { skip }, async t => {
+  const queue = `famqp-badargs-${process.pid}-${Date.now()}`;
+  const unhandled = [];
+  const onUnhandled = r => unhandled.push(r);
+  process.on('unhandledRejection', onUnhandled);
+  t.after(() => process.off('unhandledRejection', onUnhandled));
+  // an invalid x-max-length makes RabbitMQ refuse the declare with 406
+  const { pool, errors } = poolFor(t, { prefetch: 1, queue: { name: queue, options: { arguments: { 'x-max-length': 'bad' } } } });
+  let ready = 0;
+  pool.on('ready', () => ready++);
+  await until(() => errors.some(e => e?.message === 'cant establish a channel' && e.err?.code === 406));
+  assert.strictEqual(ready, 0);
+  assert.strictEqual(pool.connections[0].channels[0].alive, false);
+  assert.deepStrictEqual(unhandled, []);
+});
+
+test('issue #5: a re-create that fails on a deleted exchange retries and recovers once it is back', { skip }, async t => {
+  const id = `${process.pid}-${Date.now()}`;
+  const exchange = `famqp-ex-${id}`, queue = `famqp-exq-${id}`;
+  const admin = await amqplib.connect(URL_);
+  const adminCh = await admin.createChannel();
+  t.after(async () => {
+    await adminCh.deleteQueue(queue).catch(() => {});
+    await adminCh.deleteExchange(exchange).catch(() => {});
+    await admin.close().catch(() => {});
+  });
+  await adminCh.assertExchange(exchange, 'direct', { durable: false });
+  await adminCh.assertQueue(queue, { durable: false });
+  const { pool, errors } = poolFor(t, { prefetch: 1, exchange: { name: exchange }, queue: { name: queue }, binding: { enabled: true, pattern: 'k' } });
+  let ch, recreated = 0;
+  pool.on('ready', c => { ch = c; });
+  pool.on('recreated', () => recreated++);
+  await until(() => ch);
+  await adminCh.deleteExchange(exchange);
+  await ch.amqpChannel.checkQueue(`famqp-missing-${id}`).catch(() => {});   // broker closes the channel
+  await until(() => { ch.alive; return errors.some(e => e?.message === 'cant establish a channel' && e.err?.code === 404); });
+  assert.strictEqual(ch.alive, false, 'dead after the failed re-create');
+  await adminCh.assertExchange(exchange, 'direct', { durable: false });
+  await until(() => recreated === 1);
+  const got = [];
+  await adminCh.consume(queue, m => m && got.push(m.content.toString()), { noAck: true });  // null when teardown deletes the queue
+  ch.publish('after-recovery', 'k');
+  await until(() => got.length === 1);
+  assert.deepStrictEqual(got, ['after-recovery']);
+  assert.strictEqual(recreated, 1);
+});
+
+// review round 2: no emitted event carries the credentials from the connection URL
+test('connect, publish, close, reconnect and a refused login emit no credentials', { skip }, async t => {
+  const u = new URL(URL_);
+  const user = decodeURIComponent(u.username), pass = decodeURIComponent(u.password);
+  const wrongPass = 'famqp-wrong-s3cret';
+  const events = [];
+  const record = pool => {
+    const emit = pool.emit.bind(pool);
+    pool.emit = (name, ...args) => { events.push([name, args]); return emit(name, ...args); };
+    pool.on('error', () => {});
+  };
+  const make = password => new AMQPPool([{
+    connection: { host: u.hostname, port: Number(u.port), username: user, password, ssl: false, reconnectInterval: 50 },
+    channel: { exchange: { name: 'amq.direct' } }
+  }]);
+  const good = make(pass), bad = make(wrongPass);
+  record(good); record(bad);
+  t.after(async () => {
+    // stop() does not end a never-connected connection's reconnect loop (separate issue), so end it here
+    bad.connections.forEach(c => { c.start = () => {}; });
+    for (const p of [good, bad]) { const s = p.stop(); p.on('error', () => {}); await s.catch(() => {}); }
+  });
+  const count = (name, msg) => events.filter(([n, [a]]) => n === name && (!msg || a?.message === msg)).length;
+  let ch;
+  good.on('ready', c => { ch = c; });
+  await until(() => ch);
+  ch.publish('one', 'k');
+  good.connections[0].amqpConnection.close();   // connection close, then reconnect
+  await until(() => count('info', 'Connection created') >= 2 && ch.alive);
+  ch.publish('two', 'k');
+  await until(() => count('error') >= 1 && events.some(([n, [a]]) => n === 'error' && a?.url?.includes(String(bad.connections[0]?.URL?.host))));
+  assert.ok(count('info', 'message published') >= 2);
+  assert.ok(count('close') >= 1);
+  const text = events.map(([n, args]) => n + ' ' + args.map(a => {
+    try { return JSON.stringify(a) + (a instanceof Error ? a.message + a.stack : '') + String(a?.error?.message) + String(a?.error?.stack); }
+    catch { return String(a); }
+  }).join(' ')).join('\n');
+  for (const secret of [`${user}:${pass}@`, `${user}:${wrongPass}@`, wrongPass]) {
+    assert.ok(!text.includes(secret), `an event carries ${secret === wrongPass ? 'the wrong password' : 'user:pass@'}`);
+  }
+});
