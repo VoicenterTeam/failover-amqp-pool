@@ -24,7 +24,7 @@ async function setup(t) {
   const adminCh = await admin.createChannel();
   await adminCh.assertQueue(queue, { durable: false, autoDelete: false });
   const pool = new AMQPPool([{
-    connection: { host: u.hostname, port: Number(u.port), username: decodeURIComponent(u.username), password: decodeURIComponent(u.password), ssl: false },
+    connection: { host: u.hostname, port: Number(u.port), username: decodeURIComponent(u.username), password: decodeURIComponent(u.password), ssl: false, reconnectInterval: 50 },
     channel: { prefetch: 20, queue: { name: queue } }
   }]);
   const errors = [];
@@ -49,8 +49,11 @@ async function recreate(ctx, ch) {
   const before = ctx.creates();
   await ch.amqpChannel.checkQueue(`famqp-missing-${Date.now()}`).catch(() => {});
   await until(() => { ch.alive; return ctx.creates() > before; });
-  await wait(100);
 }
+
+// Frames on a channel are handled in order: if an ack sent before this made RabbitMQ close the
+// channel (406), this round trip rejects. It replaces sleeping before negative assertions.
+const barrier = ctx => ctx.pool.getAllChannels()[0].amqpChannel.checkQueue(ctx.queue);
 
 const preconditionFailed = errors => errors.filter(e => e?.code === 406 || /PRECONDITION_FAILED|unknown delivery tag/.test(e?.message || ''));
 
@@ -66,9 +69,10 @@ test('each delivery is handled once after K channel re-creates (consumer listens
   await until(() => channel && ctx.creates() >= 1);
   for (let k = 0; k < 3; k++) await recreate(ctx, channel);
   ctx.send('after-recreates');
-  await until(() => handled.length >= 1);
-  await wait(300);
-  assert.deepStrictEqual(handled, ['after-recreates']);
+  ctx.send('sentinel');  // queue order: once it is handled, every copy of the first one was too
+  await until(() => handled.includes('sentinel'));
+  assert.deepStrictEqual(handled, ['after-recreates', 'sentinel']);
+  await assert.doesNotReject(barrier(ctx));
   assert.deepStrictEqual(preconditionFailed(ctx.errors), []);
 });
 
@@ -102,15 +106,13 @@ test('ack/nack of a message delivered before a re-create is dropped, no PRECONDI
 
       const createsBefore = ctx.creates();
       channel[op](stale);
-      await wait(500);
-      channel.alive;  // a use that would re-create a channel the stale ack had closed
-      await wait(300);
+      await assert.doesNotReject(barrier(ctx), 'the stale ' + op + ' must not close the channel');
       assert.deepStrictEqual(preconditionFailed(ctx.errors), []);
       assert.strictEqual(ctx.creates(), createsBefore, 'no re-create after the stale ' + op);
 
       // control: the redelivered copy acks normally on the current channel
       channel.ack(redelivered);
-      await wait(300);
+      await assert.doesNotReject(barrier(ctx));
       assert.deepStrictEqual(preconditionFailed(ctx.errors), []);
       assert.strictEqual(ctx.creates(), createsBefore);
     });
@@ -129,7 +131,7 @@ test('control: first ready, consume and ack work', { skip }, async t => {
   await until(() => ready === 1);
   ctx.send('a'); ctx.send('b');
   await until(() => handled.length === 2);
-  await wait(200);
+  await assert.doesNotReject(barrier(ctx));
   assert.deepStrictEqual(handled, ['a', 'b']);
   assert.deepStrictEqual(ctx.errors, []);
 });

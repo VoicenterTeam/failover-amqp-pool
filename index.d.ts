@@ -74,14 +74,19 @@ declare class AMQPPool {
         topic: string,
         props: any
     ): void;
+    /** Routes by msg.properties.channelId; when no channel has that id (it was re-created), an
+     *  'info' event { message: 'stale ack dropped', messageId, channelId, reason } is emitted. */
     ack(msg: any): void;
+    /** Same rule as ack(), with message 'stale nack dropped'. */
     nack(msg: any): void;
 
     /** First successful create of each channel. Fires once per Channel. */
     on(event: 'ready', listener: (channel: Channel) => void): this;
     /** Each later re-create of the same Channel (channel or connection recovery). */
     on(event: 'recreated', listener: (channel: Channel) => void): this;
-    on(event: string, listener: (...args: any[]) => void): this;
+    /** Other events ('info', 'error', 'close', 'channelMessage', ...). Excludes the names above
+     *  so a mistyped 'ready'/'recreated' listener is a type error, not a fallback match. */
+    on<E extends string>(event: E extends 'ready' | 'recreated' ? never : E, listener: (...args: any[]) => void): this;
 
     getAliveChannels(): Array<Channel>;
     getChannelByHash(
@@ -131,7 +136,7 @@ declare class Channel {
 
     on(event: 'ready' | 'recreated', listener: (channel: Channel) => void): this;
     on(event: 'message' | 'channelMessage', listener: (msg: any) => void): this;
-    on(event: string, listener: (...args: any[]) => void): this;
+    on<E extends string>(event: E extends 'ready' | 'recreated' ? never : E, listener: (...args: any[]) => void): this;
 
     hasCachedAck(): boolean;
     sendToQueue(

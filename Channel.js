@@ -124,6 +124,7 @@ class Channel extends EventEmitter {
       }
   }
   create() {
+    let created = false;
     this.#createChannel()
     .then(() => {
           if (this?.exchange?.name && this?.exchange?.type) {
@@ -153,6 +154,7 @@ class Channel extends EventEmitter {
           return true;
         })
         .then(() => {
+          created = true;
           return true;
         })
         .catch((err) => {
@@ -163,6 +165,7 @@ class Channel extends EventEmitter {
           this.#isConnecting = false;
           this.alive = true;
           this.emit('info', {message: 'channel created', id: this._id})
+          if (!created) return;
           // 'ready' fires once per Channel; a re-create emits 'recreated' so 'ready' listeners
           // that attach 'message' handlers do not stack up
           const event = this.#readyEmitted ? 'recreated' : 'ready';
@@ -260,7 +263,9 @@ class Channel extends EventEmitter {
             this.emit('message', m);
             this.emit('channelMessage', m)
           }
-        }, {consumerTag: this._id});
+        }, {consumerTag: this._id}).catch(err => {
+          this.emit('error', {message: 'consume failed', channelId: this._id, queue: this.queue?.name, error: err?.message});
+        });
       }
     } else {
       this.emit('error', {message: 'channel is dead!', channelId: this._id, queue: this.queue?.name, exchange: this.exchange?.name})

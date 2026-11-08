@@ -13,6 +13,22 @@ A robust AMQP client with connection pooling, automatic failover, and Winston tr
 - Configurable queue and exchange settings
 - Flexible message consumption patterns
 
+## Breaking changes in 3.0.0
+
+- `'ready'` fires once per channel, on its first successful create. Recovery (a re-create after
+  the channel or its connection closed) emits the new `'recreated'` event instead. Code that
+  used `'ready'` as a "back up" or health signal must also listen to `'recreated'`
+  (see [Health flag](#health-flag)).
+- A channel that was consuming re-consumes by itself after a re-create, and `consume()` is
+  idempotent per amqplib channel. A consumer that deliberately stopped consuming after a
+  re-create now resumes.
+- `ack()`/`nack()` of a message delivered on a previous channel is dropped with an `'info'`
+  event `{ message: 'stale ack dropped' | 'stale nack dropped', messageId, channelId, reason }`,
+  on both the channel and the pool.
+- `'channel is dead!'` errors carry `{ message, channelId, queue, exchange }` instead of the
+  `Channel` object (the `channel` key is gone).
+- `'ready'`/`'recreated'` are not emitted when a create fails.
+
 ## Installation
 
 ```bash
@@ -312,6 +328,17 @@ amqp.on('channelMessage', (msg) => {
 });
 ```
 
+### Health flag
+
+`'ready'` fires once per channel, so a health flag needs both events to come back up:
+
+```javascript
+let healthy = false;
+amqp.on('ready', () => { healthy = true; });
+amqp.on('recreated', () => { healthy = true; });
+amqp.on('close', () => { healthy = false; });
+```
+
 ### Channel re-creates
 
 When a channel or its connection closes, the pool re-creates the same `Channel` object on a
@@ -328,10 +355,14 @@ new amqplib channel.
   them, so `ack()`/`nack()` of a message from the old channel is dropped (it would make
   RabbitMQ close the new channel with `406 PRECONDITION_FAILED unknown delivery tag`) and an
   `'info'` event is emitted instead:
-  `{ message: 'stale ack dropped', messageId, channelId, reason }`.
+  `{ message: 'stale ack dropped', messageId, channelId, reason }` (`'stale nack dropped'` for
+  `nack()`). This holds for `channel.ack()`/`channel.nack()` and for `amqp.ack()`/`amqp.nack()`;
+  the pool finds no channel for the old `channelId` and emits the same event.
   Handle the redelivered copy like any other message.
+- `'ready'` and `'recreated'` are emitted only when the create succeeds, and only then does the
+  channel re-consume.
 
-Before this change `'ready'` fired on every re-create. Code that relied on that to call
+Before 3.0.0 `'ready'` fired on every re-create. Code that relied on that to call
 `consume()` again keeps working, because the channel now re-consumes on its own.
 
 `'channel is dead!'` errors carry `{ message, channelId, queue, exchange }`, not the `Channel`.

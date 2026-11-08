@@ -3,6 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { once, EventEmitter } = require('node:events');
 const Channel = require('../Channel');
+const AMQPPool = require('..');
 
 class FakeAmqpChannel extends EventEmitter {
   constructor() {
@@ -14,7 +15,11 @@ class FakeAmqpChannel extends EventEmitter {
   }
   prefetch() { return Promise.resolve(); }
   checkQueue(queue) { return Promise.resolve({ queue }); }
-  consume(queue, cb, opts) { this.consumers.push({ cb, opts }); return Promise.resolve({ consumerTag: opts.consumerTag }); }
+  consume(queue, cb, opts) {
+    this.consumers.push({ cb, opts });
+    // amqplib rejects consume() on a closed channel (IllegalOperationError)
+    return this.failConsume ? Promise.reject(new Error('Channel closed')) : Promise.resolve({ consumerTag: opts.consumerTag });
+  }
   ack(msg) { this.acks.push(msg.fields.deliveryTag); }
   nack(msg) { this.nacks.push(msg.fields.deliveryTag); }
   close() { this.emit('close'); }
@@ -35,6 +40,12 @@ function setup() {
       createConfirmChannel: () => {
         const c = new FakeAmqpChannel();
         amqpChannels.push(c);
+        if (connection.failNext) {          // created, then set-up fails and the channel is closed
+          connection.failNext = false;
+          c.prefetch = () => Promise.reject(new Error('Channel closed'));
+          c.failConsume = true;
+        }
+        if (connection.failConsumeNext) { connection.failConsumeNext = false; c.failConsume = true; }
         return Promise.resolve(c);
       }
     }
@@ -44,7 +55,18 @@ function setup() {
   const errors = [];
   channel.on('info', i => infos.push(i));
   channel.on('error', e => errors.push(e));
-  return { channel, amqpChannels, infos, errors };
+  return { channel, amqpChannels, infos, errors, connection };
+}
+
+function trackUnhandled() {
+  let count = 0;
+  const f = () => count++;
+  process.on('unhandledRejection', f);
+  return async () => {
+    await new Promise(r => setTimeout(r, 20));  // rejections surface after the microtask queue drains
+    process.off('unhandledRejection', f);
+    return count;
+  };
 }
 
 const created = ch => new Promise(resolve => {
@@ -67,8 +89,8 @@ test('consumer written as on(ready, ch => ch.on(message)) sees each delivery onc
   channel.create();
   await first;
   for (let k = 0; k < 3; k++) await recreate(channel, amqpChannels);
+  amqpChannels.forEach((c, i) => assert.strictEqual(c.consumers.length, 1, `exactly one consumer on amqp channel ${i}`));
   const current = amqpChannels.at(-1);
-  assert.strictEqual(current.consumers.length, 1, 'exactly one consumer on the new channel');
   current.deliver('x');
   assert.strictEqual(handled, 1);
 });
@@ -131,4 +153,50 @@ test("'channel is dead!' error carries a small object, not the Channel", () => {
   assert.ok(dead);
   assert.ok(!Object.values(dead).some(v => v instanceof Channel), 'no Channel object in the event');
   assert.ok(JSON.stringify(dead).length < 500);
+});
+
+test('a failed re-create emits no recreated and does not consume on the dead channel', async () => {
+  const { channel, amqpChannels, connection, errors } = setup();
+  let recreated = 0;
+  channel.on('recreated', () => recreated++);
+  const first = created(channel);
+  channel.create();
+  await first;
+  channel.consume();
+  const unhandled = trackUnhandled();
+  connection.failNext = true;
+  await recreate(channel, amqpChannels);
+  assert.strictEqual(await unhandled(), 0, 'no unhandled rejection');
+  assert.strictEqual(recreated, 0);
+  assert.strictEqual(amqpChannels.at(-1).consumers.length, 0, 'no consume() on the failed channel');
+  assert.ok(errors.some(e => e?.message === 'cant establish a channel'));
+});
+
+test('a rejected consume() is reported as an error event, not an unhandled rejection', async () => {
+  const { channel, connection, errors } = setup();
+  connection.failConsumeNext = true;
+  const first = created(channel);
+  channel.create();
+  await first;
+  const unhandled = trackUnhandled();
+  channel.consume();
+  assert.strictEqual(await unhandled(), 0, 'no unhandled rejection');
+  const e = errors.find(e => e?.message === 'consume failed');
+  assert.ok(e, 'consume failed error emitted');
+  assert.ok(!Object.values(e).some(v => v instanceof Channel), 'no Channel object in the event');
+});
+
+test('pool ack/nack of a message whose channel was re-created emits the stale info event', () => {
+  const pool = new AMQPPool([]);
+  const infos = [];
+  pool.on('info', i => infos.push(i));
+  const msg = { fields: { deliveryTag: 3 }, properties: { messageId: 'm1', channelId: 'host.gone' } };
+  pool.ack(msg);
+  pool.nack(msg);
+  assert.deepStrictEqual(infos.map(i => i.message), ['stale ack dropped', 'stale nack dropped']);
+  for (const i of infos) {
+    assert.deepStrictEqual(Object.keys(i).sort(), ['channelId', 'message', 'messageId', 'reason']);
+    assert.strictEqual(i.messageId, 'm1');
+    assert.strictEqual(i.channelId, 'host.gone');
+  }
 });
