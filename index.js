@@ -33,7 +33,7 @@ function _buildUrl(config) {
   }
   url += config.host + ':' + config.port;
   if (config.vhost) {
-    url += config.vhost;
+    url += '/' + encodeURIComponent(config.vhost.replace(/^\//, ''));
   }
   if (config.hasOwnProperty('heartbeat')) {
     url += '?heartbeat=' + config.heartbeat;
