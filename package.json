@@ -1,6 +1,6 @@
 {
   "name": "@voicenter-team/failover-amqp-pool",
-  "version": "2.3.12",
+  "version": "2.4.0",
   "description": "amqp pool client",
   "main": "index.js",
   "scripts": {
