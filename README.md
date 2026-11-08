@@ -299,6 +299,10 @@ amqp.on('ready', (channel) => {
   console.log('Channel ready:', channel._id);
 });
 
+amqp.on('recreated', (channel) => {
+  console.log('Channel re-created:', channel._id);
+});
+
 amqp.on('close', (info) => {
   console.log('Connection closed:', info);
 });
@@ -307,6 +311,30 @@ amqp.on('channelMessage', (msg) => {
   console.log('Message received:', msg.content.toString());
 });
 ```
+
+### Channel re-creates
+
+When a channel or its connection closes, the pool re-creates the same `Channel` object on a
+new amqplib channel.
+
+- `'ready'` fires once per `Channel`, on its first create. Attaching `channel.on('message', ...)`
+  inside a `'ready'` listener is safe: the listener runs once, so handlers do not stack up.
+- `'recreated'` fires with the same `Channel` after each later re-create. Nothing needs to be
+  done in it: a channel that was consuming (`autoConsume`, or `consume()` called once) resumes
+  consuming on the new channel by itself, and its `'message'` listeners keep working.
+  `consume()` is idempotent per amqplib channel, so calling it again is harmless.
+- Messages that were unacked when the old channel closed are requeued by RabbitMQ and come
+  back with `fields.redelivered === true`. Delivery tags belong to the channel that delivered
+  them, so `ack()`/`nack()` of a message from the old channel is dropped (it would make
+  RabbitMQ close the new channel with `406 PRECONDITION_FAILED unknown delivery tag`) and an
+  `'info'` event is emitted instead:
+  `{ message: 'stale ack dropped', messageId, channelId, reason }`.
+  Handle the redelivered copy like any other message.
+
+Before this change `'ready'` fired on every re-create. Code that relied on that to call
+`consume()` again keeps working, because the channel now re-consumes on its own.
+
+`'channel is dead!'` errors carry `{ message, channelId, queue, exchange }`, not the `Channel`.
 
 ## Graceful Shutdown
 

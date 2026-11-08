@@ -77,6 +77,12 @@ declare class AMQPPool {
     ack(msg: any): void;
     nack(msg: any): void;
 
+    /** First successful create of each channel. Fires once per Channel. */
+    on(event: 'ready', listener: (channel: Channel) => void): this;
+    /** Each later re-create of the same Channel (channel or connection recovery). */
+    on(event: 'recreated', listener: (channel: Channel) => void): this;
+    on(event: string, listener: (...args: any[]) => void): this;
+
     getAliveChannels(): Array<Channel>;
     getChannelByHash(
         connectionIndex: number,
@@ -117,8 +123,15 @@ declare class Channel {
 
     consume(quueueName: string): void;
 
+    /** A message delivered on a previous (closed) amqplib channel is not acked: an 'info'
+     *  event { message: 'stale ack dropped', messageId, channelId, reason } is emitted instead. */
     ack(msg: any): void;
+    /** Same stale-message rule as ack(), with message 'stale nack dropped'. */
     nack(msg: any): void;
+
+    on(event: 'ready' | 'recreated', listener: (channel: Channel) => void): this;
+    on(event: 'message' | 'channelMessage', listener: (msg: any) => void): this;
+    on(event: string, listener: (...args: any[]) => void): this;
 
     hasCachedAck(): boolean;
     sendToQueue(

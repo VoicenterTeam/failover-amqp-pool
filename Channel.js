@@ -5,9 +5,14 @@ const EventEmitter = require('events').EventEmitter,
       probe = require('@pm2/io'),
       METRICS_NAMES = require('./metrics/names')
 
+// message -> the amqplib channel that delivered it; a delivery tag is valid only there
+const deliveredOn = new WeakMap();
+
 class Channel extends EventEmitter {
   #isAlive= false;
   #isConnecting = false;
+  #readyEmitted = false;
+  #consumingOn = null;
   constructor(connection, channelConfig) {
     super();
     this.hash = hash(channelConfig)
@@ -158,8 +163,13 @@ class Channel extends EventEmitter {
           this.#isConnecting = false;
           this.alive = true;
           this.emit('info', {message: 'channel created', id: this._id})
-          this.emit('ready', this);
-          if(this.autoConsume) this.consume()
+          // 'ready' fires once per Channel; a re-create emits 'recreated' so 'ready' listeners
+          // that attach 'message' handlers do not stack up
+          const event = this.#readyEmitted ? 'recreated' : 'ready';
+          this.#readyEmitted = true;
+          this.emit(event, this);
+          // a channel that was consuming resumes on the new amqplib channel
+          if(this.autoConsume || this.#consumingOn) this.consume()
         });
   }
   #createQueue(queue, options){
@@ -210,7 +220,7 @@ class Channel extends EventEmitter {
         this.metrics?.metric(METRICS_NAMES.messageSuccessRate)?.mark()
       } else {
         this.metrics?.metric(METRICS_NAMES.messageSuccessRate)?.mark(false)
-        this.emit('error', {message: 'channel is dead!', channel: this})
+        this.emit('error', {message: 'channel is dead!', channelId: this._id, queue: this.queue?.name, exchange: this.exchange?.name})
         throw new Error('Channel is dead!')
       }
     }
@@ -230,6 +240,9 @@ class Channel extends EventEmitter {
           this.emit('error', e)
         })
       }else {
+        // already consuming here: the same consumerTag twice would make the broker close the channel
+        if (this.#consumingOn === this.amqpChannel) return;
+        const amqpChannel = this.#consumingOn = this.amqpChannel;
         this.emit('info', {message: `consume started on queue: ${queue}`})
         this.amqpChannel.consume(this.queue.name, (m) => {
           if (m == null) {
@@ -237,6 +250,7 @@ class Channel extends EventEmitter {
             this.create();
             this.emit('error', {message: 'Message is null', channel: this, m: m})
           } else {
+            deliveredOn.set(m, amqpChannel);
             m.properties.channelId = this._id;
             if(!m.properties.messageId) m.properties.messageId = uuid();
             if(!m.properties.timestamp) m.properties.timestamp = Math.round(new Date().getTime()/1000);
@@ -249,7 +263,7 @@ class Channel extends EventEmitter {
         }, {consumerTag: this._id});
       }
     } else {
-      this.emit('error', {message: 'channel is dead!', channel: this})
+      this.emit('error', {message: 'channel is dead!', channelId: this._id, queue: this.queue?.name, exchange: this.exchange?.name})
     }
   }
 
@@ -259,8 +273,9 @@ class Channel extends EventEmitter {
       let timestamp = msg?.properties?.timestamp || msg?.timestamp;
       let deliveryTag = msg?.fields?.deliveryTag;
       if(!this.alive){
-        this.emit('error', {message: 'channel is dead!', channel: this});
+        this.emit('error', {message: 'channel is dead!', channelId: this._id, queue: this.queue?.name, exchange: this.exchange?.name});
       }
+      else if(this.#isStale(msg, 'ack')) return;
       else if(deliveryTag){
         this.amqpChannel.ack(msg);
         this.metrics?.metric(METRICS_NAMES.ackSuccessRate)?.mark();
@@ -275,10 +290,25 @@ class Channel extends EventEmitter {
 
       let deliveryTag = msg?.fields?.deliveryTag;
 
-      if (this.alive && deliveryTag) {
+      if (this.alive && deliveryTag && !this.#isStale(msg, 'nack')) {
         this.amqpChannel.nack(msg);
       }
     }
+  }
+
+  // The message came on an amqplib channel that has since been replaced. Its delivery tag is
+  // unknown on the current one (RabbitMQ would close it with 406 PRECONDITION_FAILED), and the
+  // broker already requeued the message when the old channel closed, so the ack is dropped.
+  #isStale(msg, op) {
+    const from = deliveredOn.get(msg);
+    if (!from || from === this.amqpChannel) return false;
+    this.emit('info', {
+      message: `stale ${op} dropped`,
+      messageId: msg.properties?.messageId,
+      channelId: msg.properties?.channelId,
+      reason: 'delivered on a previous channel, the broker requeued it'
+    });
+    return true;
   }
 
   hasCachedAck() {
