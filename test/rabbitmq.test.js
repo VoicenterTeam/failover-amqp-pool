@@ -259,3 +259,99 @@ test('connect, publish, close, reconnect and a refused login emit no credentials
     assert.ok(!text.includes(secret), `an event carries ${secret === wrongPass ? 'the wrong password' : 'user:pass@'}`);
   }
 });
+
+// issue #9: credentials with URL syntax characters log in, and no event carries them.
+// Needs the management API to create users, e.g. FAMQP_TEST_MGMT_URL=http://guest:guest@127.0.0.1:15672
+const MGMT = process.env.FAMQP_TEST_MGMT_URL;
+const skipMgmt = !URL_ ? 'FAMQP_TEST_URL not set' : !MGMT ? 'FAMQP_TEST_MGMT_URL not set' : false;
+
+async function mgmt(method, path, body) {
+  const m = new URL(MGMT);
+  const auth = Buffer.from(`${decodeURIComponent(m.username)}:${decodeURIComponent(m.password)}`).toString('base64');
+  const res = await fetch(`${m.origin}/api/${path}`, {
+    method, headers: { authorization: `Basic ${auth}`, 'content-type': 'application/json' },
+    body: body && JSON.stringify(body)
+  });
+  if (!res.ok && !(method === 'DELETE' && res.status === 404)) throw new Error(`${method} ${path}: ${res.status}`);
+}
+
+// a pool for one user that records every event; returns the recorded events and helpers
+async function credentialPool(t, username, password) {
+  await mgmt('PUT', `users/${encodeURIComponent(username)}`, { password, tags: '' });
+  await mgmt('PUT', `permissions/%2F/${encodeURIComponent(username)}`, { configure: '.*', write: '.*', read: '.*' });
+  t.after(() => mgmt('DELETE', `users/${encodeURIComponent(username)}`));
+  const u = new URL(URL_);
+  const pool = new AMQPPool([{
+    connection: { host: u.hostname, port: Number(u.port), username, password, ssl: false, reconnectInterval: 50 },
+    channel: { exchange: { name: 'amq.direct' } }
+  }]);
+  const events = [];
+  const emit = pool.emit.bind(pool);
+  pool.emit = (name, ...args) => { events.push([name, args]); return emit(name, ...args); };
+  pool.on('error', () => {});
+  t.after(async () => {
+    // stop() does not end a never-connected connection's reconnect loop (separate issue)
+    pool.connections.forEach(c => { c.start = () => {}; });
+    const s = pool.stop(); pool.on('error', () => {}); await s.catch(() => {});
+  });
+  const text = () => events.map(([n, args]) => n + ' ' + args.map(a => {
+    try { return JSON.stringify(a) + (a instanceof Error ? a.message + a.stack : '') + String(a?.error?.message) + String(a?.error?.stack); }
+    catch { return String(a); }
+  }).join(' ')).join('\n');
+  const assertNoSecret = () => {
+    for (const s of [password, encodeURIComponent(password)]) assert.ok(!text().includes(s), 'an event carries the password');
+  };
+  return { pool, events, assertNoSecret };
+}
+
+// one subtest per password; the parent timeout lets a failing one run out without cancelling the rest
+test('issue #9: passwords with URL syntax characters log in and are not emitted', { skip: skipMgmt, timeout: 60000 }, async t => {
+  const passwords = ['/Zm9vYmFy', '?q=1#frag', '#hash', 'a@b:c/d?e#f%25g+h i', '12/34', '%zz'];
+  for (const [i, password] of passwords.entries()) {
+    await t.test(JSON.stringify(password), async t2 => {
+      const { pool, assertNoSecret } = await credentialPool(t2, `famqp-i9-${process.pid}-${i}`, password);
+      let ready = false;
+      pool.on('ready', () => { ready = true; });
+      await until(() => ready);
+      assertNoSecret();
+    });
+  }
+});
+
+// amqplib 0.10 decodes URL credentials with unescape() after url-parse re-encodes them as UTF-8,
+// so a non-ASCII password reaches the broker mangled; the login is refused (README documents it)
+test('issue #9: a non-ASCII password is refused (amqplib limit) and is not emitted', { skip: skipMgmt }, async t => {
+  const password = 'pässwörd';
+  const { events, assertNoSecret } = await credentialPool(t, `famqp-i9-${process.pid}-nonascii`, password);
+  await until(() => events.some(([n, [a]]) => n === 'error' && /ACCESS_REFUSED|PLAIN login refused/i.test(String(a?.error?.message))));
+  assertNoSecret();
+});
+
+// issue #9 review: vhost names with URL syntax characters reach the right vhost
+test('issue #9: vhosts with URL syntax characters, and the default vhost, connect', { skip: skipMgmt, timeout: 60000 }, async t => {
+  const u = new URL(URL_);
+  const user = decodeURIComponent(u.username);
+  const vhosts = ['/', `/famqp-prod-${process.pid}`, `/famqp-a#b?c-${process.pid}`, `/%famqp-pct-${process.pid}`];
+  for (const vhost of vhosts) {
+    await t.test(JSON.stringify(vhost), async t2 => {
+      const name = vhost.slice(1);
+      if (name) {
+        await mgmt('PUT', `vhosts/${encodeURIComponent(name)}`, {});
+        t2.after(() => mgmt('DELETE', `vhosts/${encodeURIComponent(name)}`));
+        await mgmt('PUT', `permissions/${encodeURIComponent(name)}/${encodeURIComponent(user)}`, { configure: '.*', write: '.*', read: '.*' });
+      }
+      const pool = new AMQPPool([{
+        connection: { host: u.hostname, port: Number(u.port), username: user, password: decodeURIComponent(u.password), vhost, ssl: false, reconnectInterval: 50 },
+        channel: { exchange: { name: 'amq.direct' } }
+      }]);
+      pool.on('error', () => {});
+      t2.after(async () => {
+        pool.connections.forEach(c => { c.start = () => {}; });   // see credentialPool
+        const s = pool.stop(); pool.on('error', () => {}); await s.catch(() => {});
+      });
+      let ready = false;
+      pool.on('ready', () => { ready = true; });
+      await until(() => ready);
+    });
+  }
+});

@@ -28,11 +28,12 @@ function _parsConfig (rawConfig) {
 function _buildUrl(config) {
   let url = (config.ssl ? 'amqps' : 'amqp') + '://';
   if (config.username && config.password) {
-    url += config.username + ':' + config.password + '@';
+    // amqplib decodes these with unescape(): ASCII round-trips, non-ASCII does not (see README)
+    url += encodeURIComponent(config.username) + ':' + encodeURIComponent(config.password) + '@';
   }
   url += config.host + ':' + config.port;
   if (config.vhost) {
-    url += config.vhost;
+    url += '/' + encodeURIComponent(config.vhost.replace(/^\//, ''));
   }
   if (config.hasOwnProperty('heartbeat')) {
     url += '?heartbeat=' + config.heartbeat;

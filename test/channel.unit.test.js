@@ -344,3 +344,24 @@ test('create retries back off exponentially up to channelRetryMaxInterval and re
   done = settle(); assert.strictEqual(await nextAttempt(), 100); await done;
   channel.close();
 });
+
+// issue #9 item 3: events from a replaced amqplib channel are ignored
+test("a late 'close' or 'error' from a replaced amqplib channel does not mark the new one dead", async () => {
+  const { channel, amqpChannels, errors } = setup();
+  let closes = 0;
+  channel.on('close', () => closes++);
+  const first = created(channel);
+  channel.create();
+  await first;
+  await recreate(channel, amqpChannels);
+  const old = amqpChannels[0];
+  assert.notStrictEqual(old, amqpChannels.at(-1));
+  closes = 0;
+  const errorsBefore = errors.length;
+  old.emit('close');
+  old.emit('error', new Error('late error from the old channel'));
+  assert.strictEqual(channel.alive, true, 'the current channel stays alive');
+  assert.strictEqual(amqpChannels.length, 2, 'no re-create');
+  assert.strictEqual(closes, 0, "no 'close' re-emitted");
+  assert.strictEqual(errors.length, errorsBefore, "no 'error' re-emitted");
+});
