@@ -28,6 +28,10 @@ A robust AMQP client with connection pooling, automatic failover, and Winston tr
 - `'channel is dead!'` and `'Message is null'` errors carry `{ message, channelId, queue, exchange }`,
   and `'DELIVERY TAG NOT FOUND ...'` errors the same plus `messageId`, instead of the `Channel`
   object (the `channel`, `m` and `msg` keys are gone).
+- URLs in emitted events (`url` in connection `'info'`/`'error'`/`'close'` events and in
+  `'message published'` info, the pool `'close'` and `'connection'` event argument) no longer
+  carry the username and password: `amqp://host:port/vhost?...`. `'my connection is dead!!!'`
+  errors carry no URL.
 - `'ready'`/`'recreated'` are not emitted when a create fails. A failed create leaves the
   channel not alive, emits an `'info'` event
   `{ message: 'channel create failed', channelId, queue, exchange, error }` (no

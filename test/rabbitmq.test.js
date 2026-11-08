@@ -217,3 +217,45 @@ test('issue #5: a re-create that fails on a deleted exchange retries and recover
   assert.deepStrictEqual(got, ['after-recovery']);
   assert.strictEqual(recreated, 1);
 });
+
+// review round 2: no emitted event carries the credentials from the connection URL
+test('connect, publish, close, reconnect and a refused login emit no credentials', { skip }, async t => {
+  const u = new URL(URL_);
+  const user = decodeURIComponent(u.username), pass = decodeURIComponent(u.password);
+  const wrongPass = 'famqp-wrong-s3cret';
+  const events = [];
+  const record = pool => {
+    const emit = pool.emit.bind(pool);
+    pool.emit = (name, ...args) => { events.push([name, args]); return emit(name, ...args); };
+    pool.on('error', () => {});
+  };
+  const make = password => new AMQPPool([{
+    connection: { host: u.hostname, port: Number(u.port), username: user, password, ssl: false, reconnectInterval: 50 },
+    channel: { exchange: { name: 'amq.direct' } }
+  }]);
+  const good = make(pass), bad = make(wrongPass);
+  record(good); record(bad);
+  t.after(async () => {
+    // stop() does not end a never-connected connection's reconnect loop (separate issue), so end it here
+    bad.connections.forEach(c => { c.start = () => {}; });
+    for (const p of [good, bad]) { const s = p.stop(); p.on('error', () => {}); await s.catch(() => {}); }
+  });
+  const count = (name, msg) => events.filter(([n, [a]]) => n === name && (!msg || a?.message === msg)).length;
+  let ch;
+  good.on('ready', c => { ch = c; });
+  await until(() => ch);
+  ch.publish('one', 'k');
+  good.connections[0].amqpConnection.close();   // connection close, then reconnect
+  await until(() => count('info', 'Connection created') >= 2 && ch.alive);
+  ch.publish('two', 'k');
+  await until(() => count('error') >= 1 && events.some(([n, [a]]) => n === 'error' && a?.url?.includes(String(bad.connections[0]?.URL?.host))));
+  assert.ok(count('info', 'message published') >= 2);
+  assert.ok(count('close') >= 1);
+  const text = events.map(([n, args]) => n + ' ' + args.map(a => {
+    try { return JSON.stringify(a) + (a instanceof Error ? a.message + a.stack : '') + String(a?.error?.message) + String(a?.error?.stack); }
+    catch { return String(a); }
+  }).join(' ')).join('\n');
+  for (const secret of [`${user}:${pass}@`, `${user}:${wrongPass}@`, wrongPass]) {
+    assert.ok(!text.includes(secret), `an event carries ${secret === wrongPass ? 'the wrong password' : 'user:pass@'}`);
+  }
+});

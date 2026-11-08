@@ -11,6 +11,8 @@ class Connection extends EventEmitter {
     super();
     this.url = url;
     this.URL = new URL(this.url)
+    // the URL for emitted events: no username or password
+    this.safeUrl = Object.assign(new URL(this.url), {username: '', password: ''}).toString()
     this.config = config;
     this.channels = [];
     this.amqpConnection = null;
@@ -34,7 +36,7 @@ class Connection extends EventEmitter {
 
   start() {
     if (!this.alive) {
-      this.emit('info', { message: 'Connecting', url: this.url})
+      this.emit('info', { message: 'Connecting', url: this.safeUrl})
       amqplib.connect(this.url, {timeout: this.timeout ,clientProperties: {connection_name: this.connection_name}})
       .then((connection) => {
           this.amqpConnection = connection;
@@ -46,14 +48,14 @@ class Connection extends EventEmitter {
                   this.start();
             }, this.reconnectInterval);
 
-            this.emit('close', { msg: "connection closed", url: this.url});
+            this.emit('close', { msg: "connection closed", url: this.safeUrl});
           });
           this.amqpConnection.on('error', (error) => {
             this.metrics?.metric(METRICS_NAMES.errorRate)?.mark()
-            this.emit('error', { error: error , url: this.url})
+            this.emit('error', { error: error , url: this.safeUrl})
           });
           this.alive = true;
-          this.emit('info', {message: 'Connection created', url: this.url});
+          this.emit('info', {message: 'Connection created', url: this.safeUrl});
           this.connection()
         })
         .then(() => {
@@ -63,7 +65,7 @@ class Connection extends EventEmitter {
         .catch((error) => {
           this.alive = false;
           this.metrics.metric(METRICS_NAMES.errorRate).mark()
-          this.emit('error', { error: error , url: this.url})
+          this.emit('error', { error: error , url: this.safeUrl})
           let timeout = setTimeout(() => {
             clearTimeout(timeout);
             this.metrics?.metric(METRICS_NAMES.reconnectedConnectionsCount)?.inc()
@@ -77,7 +79,7 @@ class Connection extends EventEmitter {
       try {
         channel.create()
       } catch (error) {
-          this.emit('error', { error: error , url: this.url})
+          this.emit('error', { error: error , url: this.safeUrl})
       }
       
     })

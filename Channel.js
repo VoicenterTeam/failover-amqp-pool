@@ -243,7 +243,7 @@ class Channel extends EventEmitter {
       if (this.alive) {
         let message = Buffer.from(msg);
         this.amqpChannel.publish(options.exchange || this.exchange.name, topic || "", message, options)
-        this.emit("info", { message: 'message published', options: options, exchange: options.exchange || this.exchange, url: this.connection.url})
+        this.emit("info", { message: 'message published', options: options, exchange: options.exchange || this.exchange, url: this.connection.safeUrl})
         this.metrics?.metric(METRICS_NAMES.messageSuccessRate)?.mark()
       } else {
         this.metrics?.metric(METRICS_NAMES.messageSuccessRate)?.mark(false)
