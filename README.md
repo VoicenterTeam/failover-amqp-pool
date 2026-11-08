@@ -25,9 +25,13 @@ A robust AMQP client with connection pooling, automatic failover, and Winston tr
 - `ack()`/`nack()` of a message delivered on a previous channel is dropped with an `'info'`
   event `{ message: 'stale ack dropped' | 'stale nack dropped', messageId, channelId, reason }`,
   on both the channel and the pool.
-- `'channel is dead!'` errors carry `{ message, channelId, queue, exchange }` instead of the
-  `Channel` object (the `channel` key is gone).
-- `'ready'`/`'recreated'` are not emitted when a create fails.
+- `'channel is dead!'` and `'Message is null'` errors carry `{ message, channelId, queue, exchange }`,
+  and `'DELIVERY TAG NOT FOUND ...'` errors the same plus `messageId`, instead of the `Channel`
+  object (the `channel`, `m` and `msg` keys are gone).
+- `'ready'`/`'recreated'` are not emitted when a create fails. A failed create leaves the
+  channel not alive, emits an `'info'` event
+  `{ message: 'channel create failed', channelId, queue, exchange, error }` (no
+  `'channel created'` info), and retries after `reconnectInterval`.
 
 ## Installation
 
@@ -361,11 +365,18 @@ new amqplib channel.
   Handle the redelivered copy like any other message.
 - `'ready'` and `'recreated'` are emitted only when the create succeeds, and only then does the
   channel re-consume.
+- A failed create (for example a locked or missing queue, a missing exchange, a queue declare
+  the broker refuses) leaves `alive` false and retries once per `reconnectInterval` while the
+  connection is up, one pending retry at a time; reading `alive` meanwhile does not start
+  another create. A dead connection re-creates its channels when it reconnects. `close()`
+  cancels a pending retry.
 
 Before 3.0.0 `'ready'` fired on every re-create. Code that relied on that to call
 `consume()` again keeps working, because the channel now re-consumes on its own.
 
-`'channel is dead!'` errors carry `{ message, channelId, queue, exchange }`, not the `Channel`.
+`'channel is dead!'` and `'Message is null'` errors carry `{ message, channelId, queue, exchange }`,
+and `'DELIVERY TAG NOT FOUND ...'` errors add `messageId`; none carries the `Channel` or the
+connection URL.
 
 ## Graceful Shutdown
 

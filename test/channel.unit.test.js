@@ -63,14 +63,15 @@ function trackUnhandled() {
   const f = () => count++;
   process.on('unhandledRejection', f);
   return async () => {
-    await new Promise(r => setTimeout(r, 20));  // rejections surface after the microtask queue drains
+    await new Promise(r => setImmediate(r));  // rejections surface after the microtask queue drains
     process.off('unhandledRejection', f);
     return count;
   };
 }
 
+// settles when a create finishes, whether it succeeded or failed
 const created = ch => new Promise(resolve => {
-  const f = i => { if (i?.message === 'channel created') { ch.off('info', f); setImmediate(resolve); } };
+  const f = i => { if (i?.message === 'channel created' || i?.message === 'channel create failed') { ch.off('info', f); setImmediate(resolve); } };
   ch.on('info', f);
 });
 
@@ -199,4 +200,86 @@ test('pool ack/nack of a message whose channel was re-created emits the stale in
     assert.strictEqual(i.messageId, 'm1');
     assert.strictEqual(i.channelId, 'host.gone');
   }
+});
+
+// issue #5 item 1: a failed create leaves the channel dead and retries once per reconnectInterval
+test('a failed create leaves alive false and retries after reconnectInterval, one timer at a time', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { channel, amqpChannels, connection, errors } = setup();
+  connection.reconnectInterval = 100;
+  connection.failNext = true;
+  const failed = new Promise(r => channel.on('error', e => { if (e?.message === 'cant establish a channel') setImmediate(r); }));
+  channel.create();
+  await failed;
+  for (let i = 0; i < 3; i++) assert.strictEqual(channel.alive, false, 'dead after a failed create');
+  assert.strictEqual(amqpChannels.length, 1, 'reading alive while a retry is pending does not create');
+  assert.strictEqual(errors.filter(e => e?.message === 'cant establish a channel').length, 1);
+  const ready = once(channel, 'ready');
+  t.mock.timers.tick(100);
+  await ready;
+  assert.strictEqual(channel.alive, true);
+  assert.strictEqual(amqpChannels.length, 2, 'exactly one retry');
+});
+
+test('close() cancels a pending create retry', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { channel, amqpChannels, connection } = setup();
+  connection.reconnectInterval = 100;
+  connection.failNext = true;
+  const failed = new Promise(r => channel.on('error', e => { if (e?.message === 'cant establish a channel') setImmediate(r); }));
+  channel.create();
+  await failed;
+  channel.close();
+  t.mock.timers.tick(1000);
+  await new Promise(r => setImmediate(r));
+  assert.strictEqual(amqpChannels.length, 1, 'no create after close()');
+});
+
+// issue #5 item 2: small error payloads, never the Channel or the URL
+const smallPayload = (e, keys) => {
+  assert.ok(e);
+  assert.deepStrictEqual(Object.keys(e).sort(), keys);
+  assert.ok(!Object.values(e).some(v => v instanceof Channel), 'no Channel object in the event');
+  assert.ok(!JSON.stringify(e).includes('amqp://'), 'no connection URL');
+};
+
+test("'Message is null' and 'DELIVERY TAG NOT FOUND' errors carry a small object", async () => {
+  const { channel, amqpChannels, errors } = setup();
+  channel.on('ready', ch => ch.consume());
+  const first = created(channel);
+  channel.create();
+  await first;
+  const again = created(channel);
+  amqpChannels[0].consumers[0].cb(null);   // the broker cancelled the consumer; the channel re-creates
+  await again;
+  smallPayload(errors.find(e => e?.message === 'Message is null'), ['channelId', 'exchange', 'message', 'queue']);
+  channel.ack({ fields: {}, properties: { messageId: 'm1' } });
+  const notFound = errors.find(e => /DELIVERY TAG NOT FOUND/.test(e?.message));
+  smallPayload(notFound, ['channelId', 'exchange', 'message', 'messageId', 'queue']);
+  assert.strictEqual(notFound.messageId, 'm1');
+  assert.strictEqual(notFound.queue, 'q');
+});
+
+// issue #5 item 3: on checkQueue 404 the create waits for assertQueue and fails with it
+test('checkQueue 404 then assertQueue failure fails the create, no unhandled rejection', async () => {
+  const { channel, amqpChannels, connection, errors } = setup();
+  connection.reconnectInterval = 60000;
+  let readyCount = 0;
+  channel.on('ready', () => readyCount++);
+  const origCreate = connection.amqpConnection.createConfirmChannel;
+  connection.amqpConnection.createConfirmChannel = () => origCreate().then(c => {
+    c.checkQueue = () => Promise.reject(Object.assign(new Error('NOT_FOUND'), { code: 404 }));
+    c.assertQueue = () => Promise.reject(Object.assign(new Error('PRECONDITION_FAILED'), { code: 406 }));
+    return c;
+  });
+  const unhandled = trackUnhandled();
+  const failed = new Promise(r => channel.on('error', e => { if (e?.message === 'cant establish a channel') r(e); }));
+  channel.create();
+  const e = await failed;
+  assert.strictEqual(e.err.code, 406, 'the create fails with the assertQueue error');
+  assert.strictEqual(await unhandled(), 0, 'no unhandled rejection');
+  assert.strictEqual(readyCount, 0);
+  assert.strictEqual(channel.alive, false);
+  assert.strictEqual(amqpChannels.length, 2, 'checkQueue channel plus the assertQueue channel');
+  channel.close();
 });

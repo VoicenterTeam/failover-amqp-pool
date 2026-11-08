@@ -13,6 +13,7 @@ class Channel extends EventEmitter {
   #isConnecting = false;
   #readyEmitted = false;
   #consumingOn = null;
+  #retryTimer = null;
   constructor(connection, channelConfig) {
     super();
     this.hash = hash(channelConfig)
@@ -44,7 +45,8 @@ class Channel extends EventEmitter {
   }
 
   get alive(){
-    if(!this.#isAlive && !this.#isConnecting)
+    // a failed create already has its retry scheduled
+    if(!this.#isAlive && !this.#isConnecting && !this.#retryTimer)
       this.create();
     return this.#isAlive;
   }
@@ -83,7 +85,9 @@ class Channel extends EventEmitter {
     }
   }
   close(){
-    if(this.alive){
+    clearTimeout(this.#retryTimer);
+    this.#retryTimer = null;
+    if(this.#isAlive){
       this.#isAlive = false;
       this.#isConnecting = false;
       this.emit('info', {message: `Channel closed`, id: this._id})
@@ -124,6 +128,8 @@ class Channel extends EventEmitter {
       }
   }
   create() {
+    clearTimeout(this.#retryTimer);
+    this.#retryTimer = null;
     let created = false;
     this.#createChannel()
     .then(() => {
@@ -159,13 +165,26 @@ class Channel extends EventEmitter {
         })
         .catch((err) => {
           this.emit('error', {message: 'cant establish a channel', err: err});
+          this.emit('info', {message: 'channel create failed', channelId: this._id, queue: this.queue?.name, exchange: this.exchange?.name, error: err?.message});
           this.alive = false;
           return this.connection
         }).finally( _ => {
           this.#isConnecting = false;
+          clearTimeout(this.#retryTimer);
+          this.#retryTimer = null;
+          if (!created) {
+            // retry while the connection is up; a dead connection re-creates its channels on reconnect
+            if (this.connection.alive) {
+              this.#retryTimer = setTimeout(() => {
+                this.#retryTimer = null;
+                if (this.connection.alive) this.create();
+              }, this.connection.reconnectInterval || 1500);
+              this.#retryTimer.unref?.();
+            }
+            return;
+          }
           this.alive = true;
           this.emit('info', {message: 'channel created', id: this._id})
-          if (!created) return;
           // 'ready' fires once per Channel; a re-create emits 'recreated' so 'ready' listeners
           // that attach 'message' handlers do not stack up
           const event = this.#readyEmitted ? 'recreated' : 'ready';
@@ -184,14 +203,12 @@ class Channel extends EventEmitter {
 
         }).catch(err => {
             if(err.code === 404){
-                return this.#createChannel().then( _ => {
-                  this.amqpChannel.assertQueue(queue, options)
-                    .then((assertion) => {
-                      this.emit('info', `queue ${assertion.queue} created`)
-
-                      return true;
-                });
-                });
+                return this.#createChannel()
+                  .then(_ => this.amqpChannel.assertQueue(queue, options))
+                  .then((assertion) => {
+                    this.emit('info', `queue ${assertion.queue} created`)
+                    return true;
+                  });
             }
             this.emit('error',err)
             throw err;
@@ -251,7 +268,7 @@ class Channel extends EventEmitter {
           if (m == null) {
             this.amqpChannel.close();
             this.create();
-            this.emit('error', {message: 'Message is null', channel: this, m: m})
+            this.emit('error', {message: 'Message is null', channelId: this._id, queue: this.queue?.name, exchange: this.exchange?.name})
           } else {
             deliveredOn.set(m, amqpChannel);
             m.properties.channelId = this._id;
@@ -285,7 +302,7 @@ class Channel extends EventEmitter {
         this.amqpChannel.ack(msg);
         this.metrics?.metric(METRICS_NAMES.ackSuccessRate)?.mark();
       }else {
-        this.emit('error', {message: `DELIVERY TAG NOT FOUND ${messageId}`, channel: this, msg: msg});
+        this.emit('error', {message: `DELIVERY TAG NOT FOUND ${messageId}`, channelId: this._id, queue: this.queue?.name, exchange: this.exchange?.name, messageId});
       }
     }
   }

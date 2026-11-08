@@ -215,7 +215,7 @@ class AMQPPool extends EventEmitter {
         message: `stale ${op} dropped`,
         messageId: msg.properties.messageId,
         channelId: msg.properties.channelId,
-        reason: 'no channel with this channelId, it was re-created and the broker requeued the message'
+        reason: 'no channel with this channelId'
       });
     }
     channels.forEach(channel => channel[op](msg));

@@ -135,3 +135,85 @@ test('control: first ready, consume and ack work', { skip }, async t => {
   assert.deepStrictEqual(handled, ['a', 'b']);
   assert.deepStrictEqual(ctx.errors, []);
 });
+
+// A pool on its own queue config, for create failures the broker produces.
+function poolFor(t, channel) {
+  const u = new URL(URL_);
+  const pool = new AMQPPool([{
+    connection: { host: u.hostname, port: Number(u.port), username: decodeURIComponent(u.username), password: decodeURIComponent(u.password), ssl: false, reconnectInterval: 50 },
+    channel
+  }]);
+  const errors = [];
+  pool.on('error', e => errors.push(e));
+  t.after(async () => {
+    const stopped = pool.stop();
+    pool.on('error', () => {});
+    await stopped.catch(() => {});
+  });
+  return { pool, errors };
+}
+
+test('issue #5: a create that fails on a locked queue stays dead and retries until the queue is free', { skip }, async t => {
+  const queue = `famqp-locked-${process.pid}-${Date.now()}`;
+  const admin = await amqplib.connect(URL_);
+  t.after(() => admin.close().catch(() => {}));
+  const adminCh = await admin.createChannel();
+  await adminCh.assertQueue(queue, { exclusive: true });   // 405 RESOURCE_LOCKED for any other connection
+  const { pool, errors } = poolFor(t, { prefetch: 1, queue: { name: queue, options: { autoDelete: true } } });
+  let ready = 0;
+  pool.on('ready', () => ready++);
+  await until(() => errors.some(e => e?.message === 'cant establish a channel' && e.err?.code === 405));
+  const ch = pool.connections[0].channels[0];
+  assert.strictEqual(ch.alive, false, 'dead after the failed create');
+  assert.strictEqual(ready, 0);
+  await adminCh.deleteQueue(queue);   // the retry now finds no queue, asserts it and succeeds
+  await until(() => ready === 1);
+  assert.strictEqual(ch.alive, true);
+});
+
+test('issue #5: an assertQueue failure after checkQueue 404 fails the create, no ready', { skip }, async t => {
+  const queue = `famqp-badargs-${process.pid}-${Date.now()}`;
+  const unhandled = [];
+  const onUnhandled = r => unhandled.push(r);
+  process.on('unhandledRejection', onUnhandled);
+  t.after(() => process.off('unhandledRejection', onUnhandled));
+  // an invalid x-max-length makes RabbitMQ refuse the declare with 406
+  const { pool, errors } = poolFor(t, { prefetch: 1, queue: { name: queue, options: { arguments: { 'x-max-length': 'bad' } } } });
+  let ready = 0;
+  pool.on('ready', () => ready++);
+  await until(() => errors.some(e => e?.message === 'cant establish a channel' && e.err?.code === 406));
+  assert.strictEqual(ready, 0);
+  assert.strictEqual(pool.connections[0].channels[0].alive, false);
+  assert.deepStrictEqual(unhandled, []);
+});
+
+test('issue #5: a re-create that fails on a deleted exchange retries and recovers once it is back', { skip }, async t => {
+  const id = `${process.pid}-${Date.now()}`;
+  const exchange = `famqp-ex-${id}`, queue = `famqp-exq-${id}`;
+  const admin = await amqplib.connect(URL_);
+  const adminCh = await admin.createChannel();
+  t.after(async () => {
+    await adminCh.deleteQueue(queue).catch(() => {});
+    await adminCh.deleteExchange(exchange).catch(() => {});
+    await admin.close().catch(() => {});
+  });
+  await adminCh.assertExchange(exchange, 'direct', { durable: false });
+  await adminCh.assertQueue(queue, { durable: false });
+  const { pool, errors } = poolFor(t, { prefetch: 1, exchange: { name: exchange }, queue: { name: queue }, binding: { enabled: true, pattern: 'k' } });
+  let ch, recreated = 0;
+  pool.on('ready', c => { ch = c; });
+  pool.on('recreated', () => recreated++);
+  await until(() => ch);
+  await adminCh.deleteExchange(exchange);
+  await ch.amqpChannel.checkQueue(`famqp-missing-${id}`).catch(() => {});   // broker closes the channel
+  await until(() => { ch.alive; return errors.some(e => e?.message === 'cant establish a channel' && e.err?.code === 404); });
+  assert.strictEqual(ch.alive, false, 'dead after the failed re-create');
+  await adminCh.assertExchange(exchange, 'direct', { durable: false });
+  await until(() => recreated === 1);
+  const got = [];
+  await adminCh.consume(queue, m => m && got.push(m.content.toString()), { noAck: true });  // null when teardown deletes the queue
+  ch.publish('after-recovery', 'k');
+  await until(() => got.length === 1);
+  assert.deepStrictEqual(got, ['after-recovery']);
+  assert.strictEqual(recreated, 1);
+});
