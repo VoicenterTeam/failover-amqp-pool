@@ -103,7 +103,7 @@ test('no name from the broker: an error event and no consume', async () => {
   assert.strictEqual(typeof errors[0].message, 'string');
 });
 
-test('named queue (green before and after): one consume with its consumerTag', async () => {
+test('a named queue consumes once with its consumerTag', async () => {
   const { channel, fake, entered } = await ready({
     exchange: { name: 'events' }, queue: { name: 'q' },
   });
