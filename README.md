@@ -203,14 +203,16 @@ const config = [{
 
 A dynamic queue expires on the broker (`x-expires`) after 30 minutes without a consumer, so
 queues of channels that are gone do not pile up. Set `queue.options.expires` (ms) to change
-that, or `expires: 'none'` to keep the queue until it is deleted:
+that, or `expires: 'none'` to keep a dynamic queue until it is deleted:
 
 ```javascript
 queue: { options: { expires: 3600000 } }   // one hour
 queue: { options: { expires: 'none' } }    // never expires
 ```
 
-A queue with a name keeps its own options: no `expires` unless you set one. `binding.options`
+A queue with a name keeps its own options: no `expires` unless you set a number. `'none'` is
+for dynamic queues only; the broker refuses it on a named queue (`PRECONDITION_FAILED`, invalid
+argument `x-expires`). `binding.options`
 may be an array, one binding per entry; the channel waits for every bind, and a refused bind
 fails the create (or the dynamic consume) with an `'error'` event.
 

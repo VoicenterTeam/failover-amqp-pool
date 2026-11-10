@@ -416,7 +416,7 @@ class Channel extends EventEmitter {
   }
 
   // options: amqplib's sendToQueue options (headers, persistent, ...), passed on as given. They
-  // are copied before the trace context joins their headers, so the caller's object is not changed.
+  // are copied before the trace context joins their headers, so the caller's object stays as is.
   sendToQueue(queue, msg, options) {
     if (!this.alive) {
       countSent(this.connection.url, undefined, 'channel_dead');
@@ -433,6 +433,8 @@ class Channel extends EventEmitter {
     msg = Buffer.from(msg)
     // the default exchange has no name; telemetry names it amq.default
     try {
+      // no options and no SDK: publishing hands back undefined, and amqplib gets the two
+      // arguments it always got
       publishing(this.connection.url, undefined, options, withContext =>
         withContext === undefined
           ? this.amqpChannel.sendToQueue(queue, msg)

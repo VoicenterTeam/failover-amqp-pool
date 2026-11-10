@@ -99,6 +99,22 @@ test('#23 a named queue keeps an expires of its own', async () => {
   assert.strictEqual(fake().asserted.options.expires, 90000);
 });
 
+test('#23 a dynamic queue declared again after a re-create keeps expires 1800000', async () => {
+  const { channel, connection, fake } = await ready(dynamic(), { strict: true });
+  const first = fake();
+  channel.consume();
+  await settle();
+  const name = channel.queue.name;
+  first.emit('close');   // the queue is gone with it: the new channel declares it again
+  const again = new Promise(resolve => channel.once('recreated', resolve));
+  connection.reconnectInterval = 1;
+  void channel.alive;
+  await again;
+  assert.notStrictEqual(fake(), first);
+  assert.strictEqual(fake().asserted.queue, name);
+  assert.strictEqual(fake().asserted.options.expires, 1800000);
+});
+
 // ---- #27 sendToQueue: dead-channel check and options. Without an SDK first: the SDK, once
 // started, stays for the rest of the file.
 
@@ -115,23 +131,41 @@ test('#27 sendToQueue passes its options to amqplib as the third argument', asyn
   assert.deepStrictEqual(fake().sent[0].rest, [{ persistent: true, headers: { h: 1 } }]);
 });
 
-test('#27 a dead channel: error event, channel_dead count, Error thrown', async t => {
-  const { channel, connection, errors, fake } = await ready(named(), { strict: true });
-  const { points } = startMetrics(t);
-  fake().emit('close');
-  connection.alive = false;   // a dead connection: reading alive starts no re-create
-  assert.throws(() => channel.publish({ a: 1 }, 'rk'), { message: 'Channel is dead!' });
-  errors.length = 0;
-  assert.throws(() => channel.sendToQueue('target', { a: 1 }), new Error('Channel is dead!'));
+// a dead channel: the connection is dead too, so reading alive starts no re-create
+async function dead() {
+  const up = await ready(named(), { strict: true });
+  up.fake().emit('close');
+  up.connection.alive = false;
+  return up;
+}
+
+test('#27 a dead channel: sendToQueue throws the Error publish throws', async () => {
+  const { channel, fake } = await dead();
+  let published;
+  assert.throws(() => channel.publish({ a: 1 }, 'rk'), e => (published = e) instanceof Error);
+  assert.throws(() => channel.sendToQueue('target', { a: 1 }),
+    e => e instanceof Error && e.message === published.message
+      && e.message === 'Channel is dead!');
+  assert.strictEqual(fake().sent.length, 0);
+});
+
+test('#27 a dead channel: sendToQueue emits the small error payload', async () => {
+  const { channel, errors } = await dead();
+  assert.throws(() => channel.sendToQueue('target', { a: 1 }));
   assert.deepStrictEqual(errors, [{
     message: 'channel is dead!', channelId: channel._id, queue: 'work', exchange: 'events',
   }]);
-  assert.strictEqual(fake().sent.length, 0);
+});
+
+test('#27 a dead channel: sendToQueue is counted channel_dead on amq.default', async t => {
+  const { channel } = await dead();
+  const { points } = startMetrics(t);
+  assert.throws(() => channel.sendToQueue('target', { a: 1 }));
   const sent = await points('messaging.client.sent.messages');
-  const dead = sent.filter(p => p.attributes['error.type'] === 'channel_dead'
-    && p.attributes['messaging.destination.name'] === 'amq.default');
-  assert.deepStrictEqual(dead.map(p => [p.attributes['messaging.destination.name'], p.value]),
-    [['amq.default', 1]]);
+  assert.deepStrictEqual(
+    sent.map(p => [
+      p.attributes['messaging.destination.name'], p.attributes['error.type'], p.value]),
+    [['amq.default', 'channel_dead', 1]]);
 });
 
 test('#27 under an SDK options carry a traceparent, the caller object stays', async () => {
