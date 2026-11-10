@@ -101,11 +101,17 @@ class AMQPPool extends EventEmitter {
         if (at !== -1) this.connections.splice(at, 1);
         resolve(index);
       };
-      // a live connection is gone when it has closed; a down one, when its retries are stopped
+      // a live connection is gone when it has closed, or when its close() was refused; a down
+      // one, when its retries are stopped
       const live = connection.alive;
       if (live) connection.once('close', removed);
-      connection.disconnect();
-      if (!live) removed();
+      const closing = connection.disconnect();
+      if (!live) return removed();
+      closing.then(closed => {
+        if (closed) return;
+        connection.off('close', removed);
+        removed();
+      });
     })));
   }
 

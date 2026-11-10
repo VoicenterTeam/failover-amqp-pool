@@ -7,6 +7,7 @@ const { countConnectionError, countReconnect } = require('./telemetry/metrics');
 class Connection extends EventEmitter {
   #isAlive = false;
   #retryTimer = null;
+  #disconnected = false;
   constructor(url, config) {
     super();
     this.url = url;
@@ -56,11 +57,13 @@ class Connection extends EventEmitter {
   }
 
   start() {
+    // a disconnected connection stays down (a connect already in flight is discarded below)
+    if (this.#disconnected) return;
     if (!this.alive) {
       this.emit('info', { message: 'Connecting', url: this.safeUrl})
       amqplib.connect(this.url, {timeout: this.timeout ,clientProperties: {connection_name: this.connection_name}})
       .then((connection) => {
-          if (!this.reconnectOnClose) return this.#discard(connection);
+          if (this.#disconnected) return this.#discard(connection);
           this.amqpConnection = connection;
           this.amqpConnection.on('close', (e) => {
             this.alive = false;
@@ -108,16 +111,19 @@ class Connection extends EventEmitter {
     }
   }
 
+  // Resolves true when amqplib's close() succeeded or there was nothing to close, false when it
+  // rejected: the connection is already closed, so no further 'close' will come.
   disconnect() {
+    this.#disconnected = true;
     this.alive = false;
     this.reconnectOnClose = false;
     clearTimeout(this.#retryTimer);
     this.#retryTimer = null;
-    if (this.amqpConnection) {
-      this.amqpConnection.close();
-      this.amqpConnection = undefined;
-      this.channels = [];
-    }
+    if (!this.amqpConnection) return Promise.resolve(true);
+    const closing = Promise.resolve(this.amqpConnection.close()).then(() => true, () => false);
+    this.amqpConnection = undefined;
+    this.channels = [];
+    return closing;
   }
 
 }
