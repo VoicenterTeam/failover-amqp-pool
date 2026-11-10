@@ -109,14 +109,10 @@ test('live: dynamic queue consumes a message published to its exchange',
     channel: { prefetch: 5, exchange: { name: exchange, type: 'fanout' },
       binding: { enabled: true }, queueOptions: { durable: false, autoDelete: false } },
   }]);
-  let channel;
   let dynamicName;
-  // the queue exists before consume() asks for it: a first-time create makes checkQueue's 404
-  // close the channel, which is a separate defect
-  const got = new Promise(resolve => pool.on('ready', async ch => {
-    channel = ch;
+  // no pre-created queue: the name is new, so the first consume meets a queue that is missing
+  const got = new Promise(resolve => pool.on('ready', ch => {
     dynamicName = `${ch._id}:${os.hostname}`;
-    await adminCh.assertQueue(dynamicName, { durable: false, autoDelete: false });
     ch.on('message', m => { ch.ack(m); resolve(m.content.toString()); });
     ch.consume();
   }));
