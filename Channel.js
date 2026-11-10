@@ -379,7 +379,15 @@ class Channel extends EventEmitter {
       msg = JSON.stringify(msg)
     }
     msg = Buffer.from(msg)
-    this.amqpChannel.sendToQueue(queue, message)
+    // the default exchange has no name; telemetry names it amq.default
+    try {
+      publishing(this.connection.url, undefined, undefined, () =>
+        this.amqpChannel.sendToQueue(queue, msg));
+    } catch (error) {
+      countSent(this.connection.url, undefined, thrownType(error));
+      throw error;
+    }
+    countSent(this.connection.url, undefined);
   }
 }
 module.exports = Channel;
