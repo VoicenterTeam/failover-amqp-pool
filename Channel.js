@@ -8,6 +8,9 @@ const EventEmitter = require('events').EventEmitter,
 // message -> the amqplib channel that delivered it; a delivery tag is valid only there
 const deliveredOn = new WeakMap();
 
+// how long a dynamic queue lives without a consumer, ms
+const DYNAMIC_QUEUE_EXPIRES = 1800000;
+
 class Channel extends EventEmitter {
   #isAlive= false;
   #isConnecting = false;
@@ -81,12 +84,20 @@ class Channel extends EventEmitter {
     if(this?.queue?.options?.messageTtl === 'none') messageTtl = undefined
     if(Number.isInteger(this?.queue?.options?.messageTtl)) messageTtl = this?.queue?.options?.messageTtl
 
+    // A queue the channel names for itself would outlive its consumer: it expires after 30 minutes
+    // unused unless queue.options.expires says otherwise ('none' keeps it). Named queues are as set.
+    let expires = this?.queue?.options?.expires;
+    if(this.#temporaryQueue){
+      if(expires === undefined) expires = DYNAMIC_QUEUE_EXPIRES;
+      if(expires === 'none') expires = undefined;
+    }
+
     return {
       exclusive: this?.queue?.options?.exclusive || false,
       durable: this?.queue?.options?.durable || false,
       arguments: this?.queue?.options?.arguments || { "x-consumer-timeout": 7200000 },
       noAck: !this.prefetch,
-      expires: this?.queue?.options?.expires,
+      expires,
       messageTtl: messageTtl ,
       deadLetterExchange: this?.queue?.options?.deadLetterExchange,
       deadLetterRoutingKey: this?.queue?.options?.deadLetterRoutingKey,
