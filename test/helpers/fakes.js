@@ -29,7 +29,10 @@ class FakeAmqpChannel extends EventEmitter {
   }
   // appended for the dynamic-queue tests
   assertQueue(queue) { return Promise.resolve({ queue }); }
-  bindQueue(queue, exchange, pattern) { this.bound = { queue, exchange, pattern }; return Promise.resolve(); }
+  bindQueue(queue, exchange, pattern) {
+    this.bound = { queue, exchange, pattern };
+    return Promise.resolve();
+  }
 }
 
 module.exports = { FakeAmqpChannel };

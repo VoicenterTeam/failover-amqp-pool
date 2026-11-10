@@ -35,12 +35,17 @@ async function ready(config, tune = () => {}) {
 }
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
-const dynamic = { exchange: { name: 'events' }, binding: { enabled: true, pattern: 'rk' }, prefetch: 1 };
+const dynamic = {
+  exchange: { name: 'events' }, binding: { enabled: true, pattern: 'rk' }, prefetch: 1,
+};
 
 test('dynamic consume names the queue and consumes once on it', async () => {
   const { channel, fake } = await ready(dynamic);
   const consumed = [];
-  fake().consume = (q, cb, o) => { consumed.push(q); return Promise.resolve({ consumerTag: o.consumerTag }); };
+  fake().consume = (q, cb, o) => {
+    consumed.push(q);
+    return Promise.resolve({ consumerTag: o.consumerTag });
+  };
   channel.consume();
   await settle();
   const name = `${channel._id}:${os.hostname}`;
@@ -71,9 +76,14 @@ test('no name from the broker: an error event and no consume', async () => {
 });
 
 test('named queue (green before and after): one consume with its consumerTag', async () => {
-  const { channel, fake, entered } = await ready({ exchange: { name: 'events' }, queue: { name: 'q' } });
+  const { channel, fake, entered } = await ready({
+    exchange: { name: 'events' }, queue: { name: 'q' },
+  });
   const consumed = [];
-  fake().consume = (q, cb, o) => { consumed.push({ q, tag: o.consumerTag }); return Promise.resolve({}); };
+  fake().consume = (q, cb, o) => {
+    consumed.push({ q, tag: o.consumerTag });
+    return Promise.resolve({});
+  };
   channel.consume();
   await settle();
   assert.strictEqual(entered.n, 1);
