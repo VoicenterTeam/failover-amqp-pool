@@ -252,6 +252,8 @@ class Channel extends EventEmitter {
         Object.assign(msg, this.msg);
         msg = JSON.stringify(msg)
       }
+      // the channel's own defaults are copied, so ids and timestamps are not kept on them
+      if(options === this.options) options = { ...options };
       options.messageId = options?.messageId || uuid();
       options.messageId = options?.messageId || nanoId();
       options.timestamp = options?.timestamp || Math.round(new Date().getTime()/1000);
@@ -377,7 +379,15 @@ class Channel extends EventEmitter {
       msg = JSON.stringify(msg)
     }
     msg = Buffer.from(msg)
-    this.amqpChannel.sendToQueue(queue, message)
+    // the default exchange has no name; telemetry names it amq.default
+    try {
+      publishing(this.connection.url, undefined, undefined, () =>
+        this.amqpChannel.sendToQueue(queue, msg));
+    } catch (error) {
+      countSent(this.connection.url, undefined, thrownType(error));
+      throw error;
+    }
+    countSent(this.connection.url, undefined);
   }
 }
 module.exports = Channel;
