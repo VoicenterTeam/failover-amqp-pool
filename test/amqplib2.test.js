@@ -7,8 +7,9 @@ const amqplib = require('amqplib');
 const AMQPPool = require('..');
 const { offline } = require('./helpers/offline');
 
-function offlinePool(connection = {}) {
+function offlinePool(t, connection = {}) {
   const pool = new AMQPPool([{ connection: { host: '127.0.0.1', port: 5672, ...connection }, channel: {} }]);
+  t.after(() => pool.stop());
   const errors = [];
   pool.on('error', e => errors.push(e));
   return { pool, errors };
@@ -18,7 +19,7 @@ test('heartbeat 0 or unset leaves heartbeat out of the URL; a positive number is
   offline(t);
   for (const [heartbeat, query] of [[0, ''], ['0', ''], ['0.5', ''], ['abc', ''], ['', ''], [-5, ''],
     [undefined, ''], [null, ''], [25, '?heartbeat=25'], ['25', '?heartbeat=25']]) {
-    const { pool } = offlinePool({ heartbeat });
+    const { pool } = offlinePool(t, { heartbeat });
     assert.strictEqual(pool.connections[0].url, `amqp://127.0.0.1:5672${query}`, `heartbeat ${heartbeat}`);
   }
 });
@@ -26,7 +27,7 @@ test('heartbeat 0 or unset leaves heartbeat out of the URL; a positive number is
 test('a RangeError from publish is reported and not cached, under every filter', async t => {
   offline(t);
   for (const filter of [undefined, 'rr', 'all', chs => chs]) {
-    const { pool, errors } = offlinePool();
+    const { pool, errors } = offlinePool(t);
     pool.getAliveChannels = () => [{ publish() { throw new RangeError('table too big'); } }];
     pool.publish({ a: 1 }, filter);
     assert.deepStrictEqual(pool.msgCache, [], `filter ${filter}`);
@@ -38,7 +39,7 @@ test('a RangeError from publish is reported and not cached, under every filter',
 test('any other publish failure is still cached for retry', async t => {
   offline(t);
   for (const filter of [undefined, 'rr', 'all', chs => chs]) {
-    const { pool } = offlinePool();
+    const { pool } = offlinePool(t);
     pool.getAliveChannels = () => [{ publish() { throw new Error('Channel is dead!'); } }];
     pool.publish({ a: 1 }, filter);
     assert.strictEqual(pool.msgCache.length, 1, `filter ${filter}`);

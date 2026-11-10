@@ -108,7 +108,6 @@ function poolRig(t, { mockTimers = true, refuse = false, channels } = {}) {
     opened.push(c);
     return Promise.resolve(c);
   });
-  const sigint = process.listeners('SIGINT');
   const pool = new AMQPPool([{ connection: { host: 'rabbit.example', port: 5672,
     reconnectInterval: INTERVAL }, ...(channels ? { channels } : { channel: CONFIG }) }]);
   const events = [];
@@ -116,7 +115,6 @@ function poolRig(t, { mockTimers = true, refuse = false, channels } = {}) {
   for (const name of ['ready', 'recreated']) pool.on(name, () => events.push(name));
   t.after(async () => {
     await pool.stop();
-    for (const l of process.listeners('SIGINT')) if (!sigint.includes(l)) process.off('SIGINT', l);
   });
   return Object.assign(rig, { pool, events, channel: () => pool.getAllChannels()[0] });
 }

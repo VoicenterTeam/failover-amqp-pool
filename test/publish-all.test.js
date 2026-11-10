@@ -11,6 +11,7 @@ function offlinePool(t, channels) {
   Connection.prototype.start = function () {};
   t.after(() => { Connection.prototype.start = realStart; });
   const pool = new AMQPPool([{ connection: { host: '127.0.0.1', port: 5672 }, channel: {} }]);
+  t.after(() => pool.stop());
   const errors = [];
   pool.on('error', e => errors.push(e));
   pool.alive = channels.slice();
