@@ -2,6 +2,9 @@ let process = require('process');
 const { watchPool } = require('./telemetry/metrics');
 
 
+// Filters built by #onlyChannel: their failed retries stay silent, as an 'all' publish is.
+const retryFilters = new WeakSet();
+
 function build(pool, parsedConfig){
   let url = _buildUrl(pool.connection);
   parsedConfig[url] = (pool.hasOwnProperty(url)) ? parsedConfig[url] : {};
@@ -146,7 +149,7 @@ class AMQPPool extends EventEmitter {
         if (filteredChannels instanceof Channel) filteredChannels = [filteredChannels];
         for (let channelIndex in filteredChannels) {
           this.#publishOn(filteredChannels[channelIndex], {msg, filter, topic, props},
-            !filter.isAllRetry);
+            !retryFilters.has(filter));
         }
       }
     } else if (filter === 'rr') {
@@ -177,11 +180,15 @@ class AMQPPool extends EventEmitter {
   }
 
   // The filter a failed 'all' publish is cached with: the Channel object itself (an _id changes
-  // on every re-create), while it is alive, and a falsy value otherwise, which publish() caches
-  // again. Never [], which is truthy and would drop the message.
+  // on every re-create), while it is alive. While it is still in the pool but down, null, which
+  // publish() caches again. Once it is removed from the pool, [], which is truthy and drops the
+  // entry: no retry could ever reach it.
   #onlyChannel(channel) {
-    const filter = alive => (alive.includes(channel) ? [channel] : null);
-    filter.isAllRetry = true;
+    const filter = alive => {
+      if (alive.includes(channel)) return [channel];
+      return this.getAllChannels().includes(channel) ? null : [];
+    };
+    retryFilters.add(filter);
     return filter;
   }
 
