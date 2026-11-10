@@ -4,16 +4,9 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const amqplib = require('amqplib');
-const Connection = require('../Connection');
 const AMQPPool = require('..');
+const { offline } = require('./helpers/offline');
 
-// Pools whose connections never dial out, so the test owns their state. Stubbed once per test:
-// a second stub would save the first as the original and never restore it.
-const realStart = Connection.prototype.start;
-function offline(t) {
-  Connection.prototype.start = function () {};
-  t.after(() => { Connection.prototype.start = realStart; });
-}
 function offlinePool(connection = {}) {
   const pool = new AMQPPool([{ connection: { host: '127.0.0.1', port: 5672, ...connection }, channel: {} }]);
   const errors = [];

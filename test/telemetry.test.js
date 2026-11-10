@@ -14,6 +14,7 @@ const AMQPPool = require('..');
 const { CATALOGUE, SCOPE } = require('../telemetry/catalogue');
 const { startTracing, startMetrics } = require('./helpers/otel');
 const { FakeAmqpChannel } = require('./helpers/fakes');
+const { offline } = require('./helpers/offline');
 
 const URL_ = 'amqp://user:secret@rabbit.example:5673';
 const SERVER = { 'server.address': 'rabbit.example', 'server.port': 5673 };
@@ -34,12 +35,6 @@ async function readyChannel(config = { exchange: { name: 'events' }, queue: { na
   channel.create();
   await ready;
   return { channel, connection, fake: () => amqp[amqp.length - 1], errors };
-}
-
-const realStart = Connection.prototype.start;
-function offline(t) {
-  Connection.prototype.start = function () {};
-  t.after(() => { Connection.prototype.start = realStart; });
 }
 
 const values = points => points.map(p => [p.attributes, p.value]);
@@ -120,7 +115,8 @@ test('deliveries are counted as consumed, acks and nacks as settled', async t =>
   ]);
 });
 
-test('connect failures and reconnects are counted by server and code; no credentials, no default port', async t => {
+// Connect refused twice, connect, the broker forces a close, reconnect: all on mocked timers.
+async function reconnectScenario(t) {
   const { points } = startMetrics(t);
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let open;
@@ -130,25 +126,31 @@ test('connect failures and reconnects are counted by server and code; no credent
   const connection = new Connection('amqp://user:secret@broker.example:5672', { reconnectInterval: 10 });
   connection.on('error', () => {});
   connection.on('close', () => {});
+  const step = async () => { t.mock.timers.tick(10); await new Promise(setImmediate); };
   connection.start();
   await new Promise(setImmediate);
-  t.mock.timers.tick(10);          // the retry after the failed connect
-  await new Promise(setImmediate);
+  await step();                    // the retry after the failed connect
   open = new EventEmitter();
-  t.mock.timers.tick(10);          // the second retry connects
-  await new Promise(setImmediate);
+  await step();                    // the second retry connects
   open.emit('error', Object.assign(new Error('CONNECTION_FORCED'), { code: 320 }));
   open.emit('close');
-  t.mock.timers.tick(10);          // the reconnect after the close
-  await new Promise(setImmediate);
-  const broker = { ...RABBIT, 'server.address': 'broker.example' };
+  await step();                    // the reconnect after the close
+  connection.reconnectOnClose = false;
+  return { points, broker: { ...RABBIT, 'server.address': 'broker.example' } };
+}
+
+test('connect failures are counted by server and code; no credentials, no default port', async t => {
+  const { points, broker } = await reconnectScenario(t);
   const errors = values(await points('amqp_pool.connection.errors')).sort((a, b) => a[1] - b[1]);
   assert.deepStrictEqual(errors, [
     [{ ...broker, 'error.type': '320' }, 1],
     [{ ...broker, 'error.type': 'ECONNREFUSED' }, 2],
   ]);
+});
+
+test('reconnects are counted by server: three starts after the first, no credentials or port', async t => {
+  const { points, broker } = await reconnectScenario(t);
   assert.deepStrictEqual(values(await points('amqp_pool.connection.reconnects')), [[broker, 3]]);
-  connection.reconnectOnClose = false;
 });
 
 test('a disconnected connection schedules no reconnect and counts none', async t => {
@@ -264,7 +266,18 @@ test('a queue the channel names for itself is temporary, not a series per name',
   assert.ok(consumed.every(p => !('messaging.destination.name' in p.attributes)));
 });
 
-test('every attribute recorded is declared in the catalogue, and bounded', async t => {
+const rowOf = name => CATALOGUE.find(row => row.name === name || row.kind === name);
+function check(name, attributes) {
+  const declared = rowOf(name)?.attributes;
+  assert.ok(declared, `${name} is in the catalogue`);
+  for (const [key, value] of Object.entries(attributes)) {
+    assert.ok(Object.hasOwn(declared, key), `${name}: ${key} is declared`);
+    if (declared[key]) assert.ok(declared[key].includes(value), `${name}: ${key}=${value}`);
+  }
+}
+
+// One scenario that records most instruments and both span kinds, for the catalogue checks.
+async function recordEverything(t) {
   const { metrics } = startMetrics(t);
   const { spans } = startTracing();
   offline(t);
@@ -282,25 +295,26 @@ test('every attribute recorded is declared in the catalogue, and bounded', async
   channel.alive = false;
   connection.alive = false;
   assert.throws(() => channel.publish({ a: 1 }, 'rk'));
+  t.after(() => pool.stop());
+  return { metrics, spans };
+}
 
-  const rowOf = name => CATALOGUE.find(row => row.name === name || row.kind === name);
-  const check = (name, attributes) => {
-    const declared = rowOf(name)?.attributes;
-    assert.ok(declared, `${name} is in the catalogue`);
-    for (const [key, value] of Object.entries(attributes)) {
-      assert.ok(Object.hasOwn(declared, key), `${name}: ${key} is declared`);
-      if (declared[key]) assert.ok(declared[key].includes(value), `${name}: ${key}=${value}`);
-    }
-  };
+test('every metric recorded is declared in the catalogue, with its unit, and bounded', async t => {
+  const { metrics } = await recordEverything(t);
   const recorded = await metrics();
   assert.ok(recorded.length >= 6, 'the scenario records most instruments');
   for (const metric of recorded) {
     assert.strictEqual(metric.descriptor.unit, rowOf(metric.descriptor.name).unit);
     metric.dataPoints.forEach(p => check(metric.descriptor.name, p.attributes));
   }
+});
+
+test('every span attribute recorded is declared in the catalogue, and bounded', async t => {
+  const { spans } = await recordEverything(t);
   const kinds = { [api.SpanKind.PRODUCER]: 'producerSpan', [api.SpanKind.CONSUMER]: 'consumerSpan' };
-  for (const span of await spans()) check(kinds[span.kind], span.attributes);
-  await pool.stop();
+  const recorded = await spans();
+  assert.ok(recorded.length >= 2, 'a producer and a consumer span');
+  for (const span of recorded) check(kinds[span.kind], span.attributes);
 });
 
 const LIVE = process.env.FAMQP_TEST_URL;
