@@ -16,6 +16,8 @@ async function ready(config, tune = () => {}) {
     amqpConnection: {
       createConfirmChannel: () => {
         const c = new FakeAmqpChannel();
+        c.strictQueues = true;
+        c.queues.add('q');
         tune(c);
         amqp.push(c);
         return Promise.resolve(c);
@@ -35,12 +37,14 @@ async function ready(config, tune = () => {}) {
 }
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
-const dynamic = {
+// a fresh config per test: the channel writes the queue name it makes onto config.queue
+const dynamic = () => ({
   exchange: { name: 'events' }, binding: { enabled: true, pattern: 'rk' }, prefetch: 1,
-};
+  queue: { options: { durable: true, messageTtl: 60000, arguments: { 'x-max-length': 10 } } },
+});
 
 test('dynamic consume names the queue and consumes once on it', async () => {
-  const { channel, fake } = await ready(dynamic);
+  const { channel, fake } = await ready(dynamic());
   const consumed = [];
   fake().consume = (q, cb, o) => {
     consumed.push(q);
@@ -54,15 +58,39 @@ test('dynamic consume names the queue and consumes once on it', async () => {
   assert.deepStrictEqual(fake().bound, { queue: name, exchange: 'events', pattern: 'rk' });
 });
 
+test('dynamic queue is declared with the options the channel builds', async () => {
+  const { channel, fake } = await ready(dynamic());
+  channel.consume();
+  await settle();
+  const { queue, options } = fake().asserted;
+  assert.strictEqual(queue, `${channel._id}:${os.hostname}`);
+  assert.deepStrictEqual(options, channel.queueOptions);
+  assert.strictEqual(options.durable, true);
+  assert.strictEqual(options.messageTtl, 60000);
+  assert.deepStrictEqual(options.arguments, { 'x-max-length': 10 });
+});
+
+test('a refused bind is an error event and no consume', async () => {
+  const { channel, fake, errors } = await ready(dynamic(), c => {
+    c.bindQueue = () => Promise.reject(new Error('bind refused'));
+  });
+  let consumed = 0;
+  fake().consume = () => { consumed++; return Promise.resolve({}); };
+  channel.consume();
+  await settle();
+  assert.strictEqual(consumed, 0);
+  assert.deepStrictEqual(errors.map(e => e.message), ['bind refused']);
+});
+
 test('dynamic consume enters consume() twice at most', async () => {
-  const { channel, entered } = await ready(dynamic);
+  const { channel, entered } = await ready(dynamic());
   channel.consume();
   await settle();
   assert.ok(entered.n <= 2, `consume() entered ${entered.n} times`);
 });
 
 test('no name from the broker: an error event and no consume', async () => {
-  const { channel, fake, errors } = await ready(dynamic, c => {
+  const { channel, fake, errors } = await ready(dynamic(), c => {
     c.assertQueue = () => Promise.resolve({});
   });
   let consumed = 0;
@@ -94,7 +122,7 @@ test('named queue (green before and after): one consume with its consumerTag', a
 
 // Live broker: a channel with an exchange and binding but no queue name gets a message.
 const URL_ = process.env.FAMQP_TEST_URL;
-test('live: dynamic queue consumes a message published to its exchange',
+test('live: a queue that does not exist yet is declared, bound and consumed',
   { skip: URL_ ? false : 'FAMQP_TEST_URL not set' }, async t => {
   const amqplib = require('amqplib');
   const AMQPPool = require('..');
@@ -107,11 +135,14 @@ test('live: dynamic queue consumes a message published to its exchange',
     connection: { host: u.hostname, port: Number(u.port), username: decodeURIComponent(u.username),
       password: decodeURIComponent(u.password), ssl: false, reconnectInterval: 50 },
     channel: { prefetch: 5, exchange: { name: exchange, type: 'fanout' },
-      binding: { enabled: true }, queueOptions: { durable: false, autoDelete: false } },
+      binding: { enabled: true },
+      queue: { options: { durable: false, autoDelete: false, messageTtl: 60000 } } },
   }]);
   let dynamicName;
+  let channel;
   // no pre-created queue: the name is new, so the first consume meets a queue that is missing
   const got = new Promise(resolve => pool.on('ready', ch => {
+    channel = ch;
     dynamicName = `${ch._id}:${os.hostname}`;
     ch.on('message', m => { ch.ack(m); resolve(m.content.toString()); });
     ch.consume();
@@ -133,4 +164,12 @@ test('live: dynamic queue consumes a message published to its exchange',
     body = await Promise.race([got, new Promise(r => setTimeout(() => r(null), 100))]);
   }
   assert.strictEqual(body, 'hello');
+  // the broker holds the options the channel sent: the same declare passes, a changed ttl fails
+  const same = { ...channel.queueOptions };
+  const declare = options => admin.createChannel().then(c => {
+    c.on('error', () => {});  // a refused declare closes the channel
+    return c.assertQueue(dynamicName, options);
+  });
+  await assert.doesNotReject(declare(same));
+  await assert.rejects(declare({ ...same, messageTtl: 1 }), /PRECONDITION_FAILED/);
 });
