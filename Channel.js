@@ -290,7 +290,6 @@ class Channel extends EventEmitter {
       // the channel's own defaults are copied, so ids and timestamps are not kept on them
       if(options === this.options) options = { ...options };
       options.messageId = options?.messageId || uuid();
-      options.messageId = options?.messageId || nanoId();
       options.timestamp = options?.timestamp || Math.round(new Date().getTime()/1000);
       if (this.alive) {
         let message = Buffer.from(msg);
