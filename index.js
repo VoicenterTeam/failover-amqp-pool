@@ -1,6 +1,5 @@
 let process = require('process');
-const Metrics = require('./metrics')
-const METRICS_NAMES = require('./metrics/names')
+const { watchPool } = require('./telemetry/metrics');
 
 
 function build(pool, parsedConfig){
@@ -67,35 +66,23 @@ class AMQPPool extends EventEmitter {
         process.exit(err ? 1 : 0);
       })
     });
-    this.metrics = new Metrics()
+    this.#unwatch = watchPool(() => this.#reading());
+  }
+  #unwatch;
 
-    // Metrics used to work with connections
+  // The pool's state for the observable counts; isAlive, as `alive` would re-create channels
+  #reading() {
+    const connections = [];
+    const channels = [];
+    for (const connection of this.connections) {
+      connections.push({ url: connection.url, alive: connection.alive });
+      for (const channel of connection.channels) channels.push({ url: connection.url, alive: channel.isAlive });
+    }
+    return { connections, channels, cached: this.msgCache.length };
   }
   start(msgCacheInterval = 2000) {
     this.interval = setInterval(() => {
-      let aliveChannels = this.getAllChannels().length
-      this.metrics.metric({
-        type: 'gauge',
-        name: 'rabbit_message_cached_count', 
-        value: () => this.msgCache.length,
-      })
-      this.metrics.metric({
-        type: 'gauge',
-        name: 'rabbit_all_channels_count',
-        value: () => (this.getAllChannels()).length,
-      })
-      this.metrics.metric({
-        type: 'gauge',
-        name: 'rabbit_alive_channels_count',
-        value: () => aliveChannels
-      })
-      this.metrics.metric({
-        type: 'gauge',
-        name: 'rabbit_connections_total_count',
-        value: () => this.connections.length,
-      })
-
-      if (this.msgCache.length > 0 && aliveChannels > 0) {
+      if (this.msgCache.length > 0 && this.getAllChannels().length > 0) {
         let m = this.msgCache.shift();
         this.publish(m.msg, m.filter, m.topic, m.props);
       }
@@ -105,6 +92,7 @@ class AMQPPool extends EventEmitter {
   async stop() {
     let promises = []
     clearInterval(this.interval);
+    this.#unwatch();
     this.removeAllListeners();
     for (const [connectionIndex, _connection] of this.connections.entries()) {
       promises.push(
@@ -290,7 +278,6 @@ class AMQPPool extends EventEmitter {
     let connection = new Connection(url, connectionConfig);
     connection.on('close', () => {
       this.emit('close', connection.safeUrl)
-      connection?.metrics?.metric(METRICS_NAMES.reconnectedConnectionsCount)?.inc()
     });
     connection.on('error', (error) => {
       

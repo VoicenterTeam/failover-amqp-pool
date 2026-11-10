@@ -1,8 +1,7 @@
 const amqplib = require('amqplib');
 const EventEmitter = require('events').EventEmitter;
 const os = require('os');
-const Metrics = require('./metrics');
-const METRICS_NAMES = require('./metrics/names');
+const { countConnectionError, countReconnect } = require('./telemetry/metrics');
 
 
 class Connection extends EventEmitter {
@@ -20,7 +19,6 @@ class Connection extends EventEmitter {
     this.reconnectInterval = this.config.reconnectInterval  || 1500
     this.timeout = this.config?.timeout || 5000
     this.connection_name = (this.config?.connection_name || 'amqp_pool_client') + `_${os.hostname}`
-    this.metrics = new Metrics(this.URL.host)
     this.reconnectOnClose = true;
   }
   set alive(isAlive) {
@@ -44,14 +42,16 @@ class Connection extends EventEmitter {
             this.alive = false;
             let timeOutReconnect = setTimeout(() => {
                 clearTimeout(timeOutReconnect)
-                if(this.reconnectOnClose)
+                if(this.reconnectOnClose) {
+                  countReconnect(this.url);
                   this.start();
+                }
             }, this.reconnectInterval);
 
             this.emit('close', { msg: "connection closed", url: this.safeUrl});
           });
           this.amqpConnection.on('error', (error) => {
-            this.metrics?.metric(METRICS_NAMES.errorRate)?.mark()
+            countConnectionError(this.url, error);
             this.emit('error', { error: error , url: this.safeUrl})
           });
           this.alive = true;
@@ -64,11 +64,11 @@ class Connection extends EventEmitter {
         })
         .catch((error) => {
           this.alive = false;
-          this.metrics.metric(METRICS_NAMES.errorRate).mark()
+          countConnectionError(this.url, error);
           this.emit('error', { error: error , url: this.safeUrl})
           let timeout = setTimeout(() => {
             clearTimeout(timeout);
-            this.metrics?.metric(METRICS_NAMES.reconnectedConnectionsCount)?.inc()
+            countReconnect(this.url);
             this.start();
           }, this.reconnectInterval);
         });

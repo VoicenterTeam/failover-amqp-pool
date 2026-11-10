@@ -35,7 +35,6 @@ function setup() {
   const connection = {
     alive: true,
     url: 'amqp://fake',
-    metrics: null,
     amqpConnection: {
       createConfirmChannel: () => {
         const c = new FakeAmqpChannel();
