@@ -80,7 +80,6 @@ async function tick(t, ms) {
 
 function makePool(t, hosts) {
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const sigint = process.listeners('SIGINT');
   const pool = new AMQPPool(hosts.map(host => ({
     connection: { host, port: 5672, reconnectInterval: INTERVAL },
     channel: { queue: { name: `lifecycle-${host}` } }
@@ -88,7 +87,6 @@ function makePool(t, hosts) {
   pool.on('error', () => {});
   t.after(async () => {
     await pool.stop();
-    for (const l of process.listeners('SIGINT')) if (!sigint.includes(l)) process.off('SIGINT', l);
   });
   return pool;
 }
@@ -255,7 +253,6 @@ for (const [kind, payload] of payloads) {
 test('a channel error before stop() with no listener still throws', async t => {
   mockBroker(t);
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const sigint = process.listeners('SIGINT');
   const pool = new AMQPPool([{
     connection: { host: 'up.example', port: 5672 },
     channel: { queue: { name: 'lifecycle-up' } }
@@ -263,7 +260,6 @@ test('a channel error before stop() with no listener still throws', async t => {
   t.after(async () => {
     pool.on('error', () => {});
     await pool.stop();
-    for (const l of process.listeners('SIGINT')) if (!sigint.includes(l)) process.off('SIGINT', l);
   });
   await flush();
   const channel = pool.connections[0].channels[0];
