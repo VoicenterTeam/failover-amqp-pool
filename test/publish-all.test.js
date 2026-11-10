@@ -118,7 +118,7 @@ test('all: every alive channel gets the message exactly once on the first attemp
   assert.strictEqual(pool.msgCache.length, 0);
 });
 
-test('all: a channel removed from the pool has its entry dropped, reaching no other channel', t => {
+test('all: a removed channel's entry is dropped and reaches no other channel', t => {
   const [A, B] = [fake('A'), fake('B', 1)];
   const { pool } = offlinePool(t, [A, B]);
   pool.publish({ n: 1 }, 'all');
