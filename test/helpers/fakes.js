@@ -5,6 +5,7 @@ class FakeAmqpChannel extends EventEmitter {
   constructor() {
     super();
     this.published = [];
+    this.sent = [];
     this.consumers = [];
     this.tag = 0;
   }
@@ -17,6 +18,7 @@ class FakeAmqpChannel extends EventEmitter {
     this.published.push({ exchange, routingKey, options });
     return true;
   }
+  sendToQueue(queue, content, ...rest) { this.sent.push({ queue, content, rest }); return true; }
   ack() {}
   nack() {}
   close() { this.emit('close'); }
