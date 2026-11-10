@@ -124,6 +124,6 @@ test('other filters: first alive, rr and a function filter publish as before', t
   pool.publish({ n: 2 }, 'rr');
   pool.publish({ n: 3 }, 'rr');
   assert.deepStrictEqual(counts(A, B), [2, 1]);
-  pool.publish({ n: 4 }, chs => chs[1]);
+  pool.publish({ n: 4 }, chs => [chs[1]]);
   assert.deepStrictEqual(counts(A, B), [2, 2]);
 });
