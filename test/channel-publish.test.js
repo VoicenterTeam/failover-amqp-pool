@@ -11,9 +11,16 @@ async function readyChannel() {
   const connection = {
     alive: true,
     url: 'amqp://user:secret@rabbit.example:5673',
-    amqpConnection: { createConfirmChannel: () => { const c = new FakeAmqpChannel(); amqp.push(c); return Promise.resolve(c); } },
+    amqpConnection: {
+      createConfirmChannel: () => {
+        const c = new FakeAmqpChannel();
+        amqp.push(c);
+        return Promise.resolve(c);
+      },
+    },
   };
-  const channel = new Channel(connection, { exchange: { name: 'events' }, queue: { name: 'q' }, prefetch: 1 });
+  const config = { exchange: { name: 'events' }, queue: { name: 'q' }, prefetch: 1 };
+  const channel = new Channel(connection, config);
   channel.on('error', () => {});
   const ready = new Promise(resolve => channel.once('ready', resolve));
   channel.create();
@@ -21,7 +28,7 @@ async function readyChannel() {
   return { channel, fake: () => amqp[amqp.length - 1] };
 }
 
-test('two publishes without options send distinct messageIds and leave channel.options alone', async () => {
+test('two publishes without options: distinct messageIds, channel.options untouched', async () => {
   const { channel, fake } = await readyChannel();
   channel.publish({ a: 1 }, 'rk');
   channel.publish({ a: 2 }, 'rk');
@@ -51,11 +58,12 @@ test('sendToQueue sends the JSON buffer to amqplib with the queue name', async (
   assert.deepStrictEqual(fake().sent[0].rest, []);
 });
 
-test('sendToQueue is counted on messaging.client.sent.messages to amq.default', async t => {
+test('sendToQueue is counted on messaging.client.sent.messages, amq.default', async t => {
   const { channel } = await readyChannel();
   const { points } = startMetrics(t);
   channel.sendToQueue('target', { a: 1 });
-  const got = (await points('messaging.client.sent.messages')).map(p => [p.attributes['messaging.destination.name'], p.value]);
+  const sent = await points('messaging.client.sent.messages');
+  const got = sent.map(p => [p.attributes['messaging.destination.name'], p.value]);
   assert.deepStrictEqual(got, [['amq.default', 1]]);
 });
 
@@ -64,6 +72,7 @@ test('a failing sendToQueue is counted with its error.type and rethrown', async 
   const { points } = startMetrics(t);
   fake().sendToQueue = () => { throw new RangeError('table too big'); };
   assert.throws(() => channel.sendToQueue('target', { a: 1 }), RangeError);
-  const got = (await points('messaging.client.sent.messages')).map(p => [p.attributes['error.type'], p.value]);
+  const sent = await points('messaging.client.sent.messages');
+  const got = sent.map(p => [p.attributes['error.type'], p.value]);
   assert.deepStrictEqual(got, [['RangeError', 1]]);
 });
