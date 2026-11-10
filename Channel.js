@@ -416,7 +416,14 @@ class Channel extends EventEmitter {
     return this._cacheAck.length > 0;
   }
 
-  sendToQueue(queue, msg) {
+  // options: amqplib's sendToQueue options (headers, persistent, ...), passed on as given. They are
+  // copied before the trace context joins their headers, so the caller's object is not changed.
+  sendToQueue(queue, msg, options) {
+    if (!this.alive) {
+      countSent(this.connection.url, undefined, 'channel_dead');
+      this.emit('error', {message: 'channel is dead!', channelId: this._id, queue: this.queue?.name, exchange: this.exchange?.name})
+      throw new Error('Channel is dead!')
+    }
     if(msg instanceof Object){
       Object.assign(msg, this.msg);
       msg = JSON.stringify(msg)
@@ -424,8 +431,10 @@ class Channel extends EventEmitter {
     msg = Buffer.from(msg)
     // the default exchange has no name; telemetry names it amq.default
     try {
-      publishing(this.connection.url, undefined, undefined, () =>
-        this.amqpChannel.sendToQueue(queue, msg));
+      publishing(this.connection.url, undefined, options, withContext =>
+        withContext === undefined
+          ? this.amqpChannel.sendToQueue(queue, msg)
+          : this.amqpChannel.sendToQueue(queue, msg, withContext));
     } catch (error) {
       countSent(this.connection.url, undefined, thrownType(error));
       throw error;
