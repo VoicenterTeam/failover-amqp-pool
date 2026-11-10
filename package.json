@@ -12,7 +12,7 @@
     "telemetry/"
   ],
   "scripts": {
-    "test": "node --test --test-timeout=10000"
+    "test": "node --test --test-timeout=10000 test/*.test.js"
   },
   "repository": {
     "type": "git",
