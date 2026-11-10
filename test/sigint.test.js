@@ -4,52 +4,72 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
+const { EventEmitter } = require('node:events');
+const amqplib = require('amqplib');
 const AMQPPool = require('..');
+const Connection = require('../Connection');
+const { FakeAmqpChannel } = require('./helpers/fakes');
 
 const count = () => process.listenerCount('SIGINT');
-const build = (name) => {
+// Every pool is stopped after its test, so a red run leaves no reconnect timer behind.
+const build = (t, name, connection = { host: '127.0.0.1', port: 1 }) => {
   const pool = new AMQPPool([{
-    connection: { host: '127.0.0.1', port: 1, reconnectInterval: 60000 },
+    connection: { ...connection, reconnectInterval: 60000 },
     channel: { queue: { name } }
   }]);
   pool.on('error', () => {});
+  t.after(() => pool.stop().catch(() => {}));
   return pool;
 };
 
-test('stop() puts the SIGINT listener count back to what it was before the pool', async () => {
+// amqplib.connect opens a fake that closes the way the real one does: 'close' after close().
+function mockBroker(t) {
+  t.mock.method(amqplib, 'connect', () => {
+    const c = new EventEmitter();
+    c.close = () => Promise.resolve().then(() => c.emit('close'));
+    c.createConfirmChannel = () => Promise.resolve(new FakeAmqpChannel());
+    return Promise.resolve(c);
+  });
+}
+const connected = async (pool) => {
+  for (let i = 0; i < 1000 && !pool.connections[0].alive; i++) await new Promise(setImmediate);
+  assert.ok(pool.connections[0].alive, 'the pool never connected');
+};
+
+test('stop() puts the SIGINT listener count back to what it was before the pool', async (t) => {
   const before = count();
-  const pool = build('sigint-one');
+  const pool = build(t, 'sigint-one');
   assert.strictEqual(count(), before + 1);
   await pool.stop();
   assert.strictEqual(count(), before);
 });
 
-test('stopping one pool leaves the other pool listener in place', async () => {
+test('stopping one pool leaves the other pool listener in place', async (t) => {
   const before = count();
-  const a = build('sigint-a');
-  const b = build('sigint-b');
+  const a = build(t, 'sigint-a');
+  const b = build(t, 'sigint-b');
   const both = process.listeners('SIGINT');
   await a.stop();
   assert.strictEqual(count(), before + 1);
-  assert.ok(both.includes(process.listeners('SIGINT').at(-1)));
+  assert.strictEqual(process.listeners('SIGINT').at(-1), both.at(-1));
   await b.stop();
   assert.strictEqual(count(), before);
 });
 
-test('11 pools built and stopped print no MaxListenersExceededWarning', async () => {
+test('11 pools built and stopped print no MaxListenersExceededWarning', async (t) => {
   const warnings = [];
   const onWarning = (w) => warnings.push(w.name);
   process.on('warning', onWarning);
-  for (let i = 0; i < 11; i++) await build(`sigint-many-${i}`).stop();
+  for (let i = 0; i < 11; i++) await build(t, `sigint-many-${i}`).stop();
   await new Promise(setImmediate);
   process.off('warning', onWarning);
   assert.deepStrictEqual(warnings, []);
 });
 
-test('stop() twice removes one listener only', async () => {
+test('stop() twice removes one listener only', async (t) => {
   const before = count();
-  const a = build('sigint-twice-a');
-  const b = build('sigint-twice-b');
+  const a = build(t, 'sigint-twice-a');
+  const b = build(t, 'sigint-twice-b');
   await a.stop();
   await a.stop();
   assert.strictEqual(count(), before + 1);
@@ -57,10 +77,44 @@ test('stop() twice removes one listener only', async () => {
   assert.strictEqual(count(), before);
 });
 
-test('stop() still resolves with one index per connection', async () => {
-  const pool = build('sigint-promise');
+test('stop() still resolves with one index per connection', async (t) => {
+  const pool = build(t, 'sigint-promise');
   assert.deepStrictEqual(await pool.stop(), [0]);
 });
+
+test('stop() of a connected pool removes its SIGINT listener', async (t) => {
+  mockBroker(t);
+  const before = count();
+  const pool = build(t, 'sigint-alive');
+  await connected(pool);
+  assert.strictEqual(count(), before + 1);
+  await pool.stop();
+  assert.strictEqual(count(), before);
+});
+
+test('stop() that rejects on a throwing disconnect still removes the listener', async (t) => {
+  mockBroker(t);
+  const before = count();
+  const pool = build(t, 'sigint-throws');
+  await connected(pool);
+  t.mock.method(Connection.prototype, 'disconnect', () => { throw new Error('boom'); });
+  await assert.rejects(pool.stop(), /boom/);
+  assert.strictEqual(count(), before);
+});
+
+const LIVE = process.env.FAMQP_TEST_URL;
+test('stop() of a pool on the live broker removes its SIGINT listener',
+  { skip: LIVE ? false : 'FAMQP_TEST_URL not set' }, async (t) => {
+    const u = new URL(LIVE);
+    const before = count();
+    const pool = build(t, `sigint-live-${process.pid}-${Date.now()}`, {
+      host: u.hostname, port: Number(u.port), ssl: false,
+      username: decodeURIComponent(u.username), password: decodeURIComponent(u.password)
+    });
+    await connected(pool);
+    await pool.stop();
+    assert.strictEqual(count(), before);
+  });
 
 // The handler calls stop(this.callback), but stop() is async and ignores a callback, so the
 // handler's process.exit never runs today (recorded as a separate defect). This row pins what
