@@ -13,6 +13,11 @@ A robust AMQP client with connection pooling, automatic failover, and Winston tr
 - Configurable queue and exchange settings
 - Flexible message consumption patterns
 
+## Changes in 4.0.x
+
+- `stop()` now ends every retry: a connection that is down or still connecting is disconnected and
+  not retried, `stop()` removes every connection, and an `'error'` during teardown no longer throws.
+
 ## Breaking changes in 4.0.0
 
 - `@pm2/io` is gone, and with it the pm2 metrics (`[AMQP_POOL] [host]rabbit_*`). Metrics and
