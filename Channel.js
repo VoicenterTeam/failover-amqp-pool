@@ -11,6 +11,7 @@ const deliveredOn = new WeakMap();
 class Channel extends EventEmitter {
   #isAlive= false;
   #isConnecting = false;
+  #closed = false;
   #readyEmitted = false;
   #consumingOn = null;
   #retryTimer = null;
@@ -54,7 +55,8 @@ class Channel extends EventEmitter {
   }
 
   get alive(){
-    // a failed create already has its retry scheduled; a dead connection re-creates its channels on reconnect
+    // a failed create already has its retry scheduled; a dead connection re-creates its channels
+    // on reconnect; create() does nothing once the channel is closed
     if(!this.#isAlive && !this.#isConnecting && !this.#retryTimer && this.connection.alive)
       this.create();
     return this.#isAlive;
@@ -97,14 +99,22 @@ class Channel extends EventEmitter {
       noLocal: this?.queue?.options?.noLocal
     }
   }
+  // Final: no read, retry, reconnect or create in flight brings the channel back. Resolves true
+  // when amqplib closed its channel or there was none to close, false when close() rejected: the
+  // channel is already closed, so no 'close' event will come.
   close(){
+    this.#closed = true;
     clearTimeout(this.#retryTimer);
     this.#retryTimer = null;
-    if(this.#isAlive){
-      this.#isAlive = false;
-      this.#isConnecting = false;
-      this.emit('info', {message: `Channel closed`, id: this._id})
-      this.amqpChannel?.close()
+    const wasAlive = this.#isAlive;
+    this.#isAlive = false;
+    if(wasAlive) this.emit('info', {message: `Channel closed`, id: this._id})
+    // a create in flight has its amqplib channel too: it must not outlive the close
+    if(!this.amqpChannel || !(wasAlive || this.#isConnecting)) return Promise.resolve(true);
+    try {
+      return Promise.resolve(this.amqpChannel.close()).then(() => true, () => false);
+    } catch (error) {
+      return Promise.resolve(false);   // already closed
     }
   }
   #createID(){
@@ -115,6 +125,12 @@ class Channel extends EventEmitter {
       this.#isConnecting = true;
       return this.connection.amqpConnection.createConfirmChannel()
         .then((amqpChannel) => {
+          if (this.#closed) {
+            // closed while it was being created: nothing is waiting for this channel
+            amqpChannel.on('error', () => {});
+            try { Promise.resolve(amqpChannel.close()).catch(() => {}); } catch (e) {}   // closed
+            throw new Error('channel closed while it was being created');
+          }
           let old_id = this._id;
           this._id = this.#createID();
           this.emit('info', {message: `Channel created`, id: this._id, old_id})
@@ -144,6 +160,7 @@ class Channel extends EventEmitter {
       }
   }
   create() {
+    if (this.#closed) return;
     clearTimeout(this.#retryTimer);
     this.#retryTimer = null;
     let created = false;
@@ -180,6 +197,7 @@ class Channel extends EventEmitter {
           return true;
         })
         .catch((err) => {
+          if (this.#closed) return;   // its create was cut short by the close: no error to report
           this.emit('error', {message: 'cant establish a channel', err: err});
           this.emit('info', {message: 'channel create failed', channelId: this._id, queue: this.queue?.name, exchange: this.exchange?.name, error: err?.message});
           this.alive = false;
@@ -188,6 +206,8 @@ class Channel extends EventEmitter {
           this.#isConnecting = false;
           clearTimeout(this.#retryTimer);
           this.#retryTimer = null;
+          // close() closed the amqplib channel; no 'ready', and no retry (create() would refuse it)
+          if (this.#closed) return;
           if (!created) {
             try { this.amqpChannel?.close()?.catch?.(() => {}); } catch (e) {}   // already closed
             // retry while the connection is up; a dead connection re-creates its channels on reconnect.

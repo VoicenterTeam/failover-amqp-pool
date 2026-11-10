@@ -274,25 +274,32 @@ class AMQPPool extends EventEmitter {
     }
     return channels;
   }
+  // Resolves once each channel with this id is closed and out of its connection's list. A dead
+  // channel has no 'close' coming, so it is removed at once; a live one when it has closed, or
+  // when amqplib refused to close it (already closed).
   async removeChannelById(id){
-    let promises = []
-    for (let connectionIndex in this.connections) {
-      for (let channelIndex in this.connections[connectionIndex].channels) {
-        if (this.connections[connectionIndex].channels[channelIndex]._id === id) {
-          promises.push(
-            new Promise( (resolve) => {
-              this.connections[connectionIndex].channels[channelIndex].once('close', () => {
-                this.connections[connectionIndex].channels.splice(channelIndex, 1);
-                resolve(channelIndex)
-              })
-              this.connections[connectionIndex].channels[channelIndex]?.close()
-            })
-          )
-                    
-        }
+    const removals = [];
+    for (const connection of this.connections) {
+      for (const channel of connection.channels.filter(candidate => candidate._id === id)) {
+        removals.push(new Promise((resolve) => {
+          const removed = () => {
+            const at = connection.channels.indexOf(channel);
+            connection.removeChannel(channel);
+            resolve(at);
+          };
+          const live = channel.isAlive;
+          if (live) channel.once('close', removed);
+          const closing = channel.close();
+          if (!live) return removed();
+          closing.then(closed => {
+            if (closed) return;
+            channel.off('close', removed);
+            removed();
+          });
+        }));
       }
     }
-    return Promise.all(promises)
+    return Promise.all(removals);
   }
 
   createConnection(url, connectionConfig){
