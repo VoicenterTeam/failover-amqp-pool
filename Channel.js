@@ -273,10 +273,9 @@ class Channel extends EventEmitter {
   }
   #bindQueue(queue, exchange, pattern = '', options = {}){
     if(Array.isArray(options)){
-      options.forEach( header => {
-        this.amqpChannel.bindQueue(queue, exchange, pattern, header);
-      })
-      return true;
+      // all of them, so a refused bind reaches the caller's catch
+      return Promise.all(options.map( header =>
+        this.amqpChannel.bindQueue(queue, exchange, pattern, header)));
     }else {
       return this.amqpChannel.bindQueue(queue, exchange, pattern, options);
     }
