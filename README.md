@@ -201,6 +201,28 @@ const config = [{
 }];
 ```
 
+A dynamic queue expires on the broker (`x-expires`) after 30 minutes without a consumer, so
+queues of channels that are gone do not pile up. Set `queue.options.expires` (ms) to change
+that, or `expires: 'none'` to keep a dynamic queue until it is deleted:
+
+```javascript
+queue: { options: { expires: 3600000 } }   // one hour
+queue: { options: { expires: 'none' } }    // never expires
+```
+
+A queue with a name keeps its own options: no `expires` unless you set a number. `'none'` is
+for dynamic queues only; the broker refuses it on a named queue (`PRECONDITION_FAILED`, invalid
+argument `x-expires`). `binding.options`
+may be an array, one binding per entry; the channel waits for every bind, and a refused bind
+fails the create (or the dynamic consume) with an `'error'` event.
+
+### Sending to a queue
+`channel.sendToQueue(queue, msg, [options])` sends through the default exchange. `options` are
+amqplib's (`headers`, `persistent`, ...) and are passed on; the caller's object is not changed.
+With an OpenTelemetry SDK started, the trace context is written into a copy of `options.headers`.
+On a dead channel it behaves like `publish`: an `'error'` event `'channel is dead!'`, a
+`channel_dead` count, and `Error('Channel is dead!')` thrown.
+
 ### Message Acknowledgement
 ```javascript
 // Acknowledge a message
@@ -308,7 +330,7 @@ written to in place, so a pool retry of a cached message that had your options k
         durable: true,         // Survive broker restarts
         autoDelete: false,     // Delete when last consumer unsubscribes
         messageTtl: 3600000,   // Message TTL in ms
-        expires: undefined,    // Queue expiry in ms
+        expires: undefined,    // Queue expiry in ms (a dynamic queue: 1800000, or 'none')
         deadLetterExchange: '', // Dead letter exchange
         deadLetterRoutingKey: '', // Dead letter routing key
         maxLength: undefined,  // Maximum queue length
@@ -398,7 +420,10 @@ amqp.on('close', () => { healthy = false; });
 ### Channel re-creates
 
 When a channel or its connection closes, the pool re-creates the same `Channel` object on a
-new amqplib channel.
+new amqplib channel, unless `close()` was called on it: `close()` is final. After it no read of
+`alive`, retry, reconnect or create in flight brings the channel back; make a new channel
+instead. `amqp.removeChannelById(id)` closes the channel and removes it, and resolves also
+for a channel that is already dead.
 
 - `'ready'` fires once per `Channel`, on its first create. Attaching `channel.on('message', ...)`
   inside a `'ready'` listener is safe: the listener runs once, so handlers do not stack up.
@@ -460,7 +485,7 @@ started after the pool loads is picked up. The meter and the tracer are named
 | `amqp_pool.connection.count` | observable up-down counter | `{connection}` | `messaging.system`, `server.address`, `server.port`, `amqp_pool.state` (`alive`, `down`) |
 | `amqp_pool.channel.count` | observable up-down counter | `{channel}` | as above |
 | `amqp_pool.message.cached` | observable up-down counter | `{message}` | `messaging.system` |
-| `publish {exchange}` | PRODUCER span | | as `sent.messages`; its context goes in the message headers (`sendToQueue`'s span injects none) |
+| `publish {exchange}` | PRODUCER span | | as `sent.messages`; its context goes in the message headers; `sendToQueue`'s span injects it into its `options.headers` |
 | `process {queue}` | CONSUMER span | | as `consumed.messages`; parent is the context in the headers; active while the `'message'` listeners run synchronously |
 
 `server.port` is left out on the scheme's default port. The default exchange is `amq.default`.

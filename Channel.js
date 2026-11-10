@@ -8,6 +8,9 @@ const EventEmitter = require('events').EventEmitter,
 // message -> the amqplib channel that delivered it; a delivery tag is valid only there
 const deliveredOn = new WeakMap();
 
+// how long a dynamic queue lives without a consumer, ms
+const DYNAMIC_QUEUE_EXPIRES = 1800000;
+
 class Channel extends EventEmitter {
   #isAlive= false;
   #isConnecting = false;
@@ -81,12 +84,21 @@ class Channel extends EventEmitter {
     if(this?.queue?.options?.messageTtl === 'none') messageTtl = undefined
     if(Number.isInteger(this?.queue?.options?.messageTtl)) messageTtl = this?.queue?.options?.messageTtl
 
+    // A queue the channel names for itself would outlive its consumer: it expires after 30
+    // minutes unused unless queue.options.expires says otherwise ('none' keeps it). Named
+    // queues are as set.
+    let expires = this?.queue?.options?.expires;
+    if(this.#temporaryQueue){
+      if(expires === undefined) expires = DYNAMIC_QUEUE_EXPIRES;
+      if(expires === 'none') expires = undefined;
+    }
+
     return {
       exclusive: this?.queue?.options?.exclusive || false,
       durable: this?.queue?.options?.durable || false,
       arguments: this?.queue?.options?.arguments || { "x-consumer-timeout": 7200000 },
       noAck: !this.prefetch,
-      expires: this?.queue?.options?.expires,
+      expires,
       messageTtl: messageTtl ,
       deadLetterExchange: this?.queue?.options?.deadLetterExchange,
       deadLetterRoutingKey: this?.queue?.options?.deadLetterRoutingKey,
@@ -262,10 +274,9 @@ class Channel extends EventEmitter {
   }
   #bindQueue(queue, exchange, pattern = '', options = {}){
     if(Array.isArray(options)){
-      options.forEach( header => {
-        this.amqpChannel.bindQueue(queue, exchange, pattern, header);
-      })
-      return true;
+      // all of them, so a refused bind reaches the caller's catch
+      return Promise.all(options.map( header =>
+        this.amqpChannel.bindQueue(queue, exchange, pattern, header)));
     }else {
       return this.amqpChannel.bindQueue(queue, exchange, pattern, options);
     }
@@ -279,7 +290,6 @@ class Channel extends EventEmitter {
       // the channel's own defaults are copied, so ids and timestamps are not kept on them
       if(options === this.options) options = { ...options };
       options.messageId = options?.messageId || uuid();
-      options.messageId = options?.messageId || nanoId();
       options.timestamp = options?.timestamp || Math.round(new Date().getTime()/1000);
       if (this.alive) {
         let message = Buffer.from(msg);
@@ -405,7 +415,17 @@ class Channel extends EventEmitter {
     return this._cacheAck.length > 0;
   }
 
-  sendToQueue(queue, msg) {
+  // options: amqplib's sendToQueue options (headers, persistent, ...), passed on as given. They
+  // are copied before the trace context joins their headers, so the caller's object stays as is.
+  sendToQueue(queue, msg, options) {
+    if (!this.alive) {
+      countSent(this.connection.url, undefined, 'channel_dead');
+      this.emit('error', {
+        message: 'channel is dead!', channelId: this._id,
+        queue: this.queue?.name, exchange: this.exchange?.name,
+      })
+      throw new Error('Channel is dead!')
+    }
     if(msg instanceof Object){
       Object.assign(msg, this.msg);
       msg = JSON.stringify(msg)
@@ -413,8 +433,12 @@ class Channel extends EventEmitter {
     msg = Buffer.from(msg)
     // the default exchange has no name; telemetry names it amq.default
     try {
-      publishing(this.connection.url, undefined, undefined, () =>
-        this.amqpChannel.sendToQueue(queue, msg));
+      // no options and no SDK: publishing hands back undefined, and amqplib gets the two
+      // arguments it always got
+      publishing(this.connection.url, undefined, options, withContext =>
+        withContext === undefined
+          ? this.amqpChannel.sendToQueue(queue, msg)
+          : this.amqpChannel.sendToQueue(queue, msg, withContext));
     } catch (error) {
       countSent(this.connection.url, undefined, thrownType(error));
       throw error;
