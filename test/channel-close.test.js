@@ -16,7 +16,8 @@ const CONFIG = { queue: { name: 'q' }, prefetch: 1 };
 
 // The amqplib channel as 2.x behaves: close() answers, then 'close' arrives; close() on a channel
 // that is already closed rejects. Switches: rejectClose (close() always rejects, no 'close'),
-// deferClose (close() answers, 'close' waits for finishClose()), holdCheck (checkQueue waits).
+// deferClose (close() answers, 'close' waits for finishClose()), holdCheck and holdExchange
+// (checkQueue and assertExchange wait; close() rejects them, as amqplib does, never resolves).
 class ClosingChannel extends FakeAmqpChannel {
   constructor() {
     super();
@@ -24,12 +25,16 @@ class ClosingChannel extends FakeAmqpChannel {
     this.closed = false;
     this.rejectClose = false;
     this.deferClose = false;
-    this.holdCheck = null;
+    this.holdCheck = false;
+    this.holdExchange = false;
+    this.pending = [];
   }
   close() {
     this.closeCalls++;
     if (this.closed || this.rejectClose) return Promise.reject(new Error('Channel closed'));
     this.closed = true;
+    const ended = new Error('Channel ended, no reply will be forthcoming');
+    this.pending.splice(0).forEach(reject => reject(ended));
     if (!this.deferClose) Promise.resolve().then(() => this.emit('close'));
     return Promise.resolve();
   }
@@ -37,7 +42,11 @@ class ClosingChannel extends FakeAmqpChannel {
   brokerClose() { this.closed = true; this.emit('close'); }
   checkQueue(queue) {
     if (!this.holdCheck) return super.checkQueue(queue);
-    return new Promise(resolve => this.holdCheck.push(() => resolve({ queue })));
+    return new Promise((resolve, reject) => this.pending.push(reject));
+  }
+  assertExchange() {
+    if (!this.holdExchange) return Promise.resolve();
+    return new Promise((resolve, reject) => this.pending.push(reject));
   }
 }
 
@@ -91,9 +100,11 @@ async function readyRig(config) {
 function poolRig(t, { mockTimers = true, refuse = false, channels } = {}) {
   if (mockTimers) t.mock.timers.enable({ apis: ['setTimeout'] });
   const opened = [];
+  const rig = { opened, onOpen: () => {} };   // onOpen(connection) prepares each new connection
   t.mock.method(amqplib, 'connect', () => {
     if (refuse) return Promise.reject(new Error('connect ECONNREFUSED'));
     const c = fakeAmqpConnection();
+    rig.onOpen(c);
     opened.push(c);
     return Promise.resolve(c);
   });
@@ -107,7 +118,7 @@ function poolRig(t, { mockTimers = true, refuse = false, channels } = {}) {
     await pool.stop();
     for (const l of process.listeners('SIGINT')) if (!sigint.includes(l)) process.off('SIGINT', l);
   });
-  return { pool, opened, events, channel: () => pool.getAllChannels()[0] };
+  return Object.assign(rig, { pool, events, channel: () => pool.getAllChannels()[0] });
 }
 
 async function readyPool(t, options) {
@@ -206,17 +217,85 @@ test('close() during an in-flight create: the new amqplib channel closes, no rea
   assert.strictEqual(channel.isAlive, false);
 });
 
-test('close() while a create waits on the queue check: channel closes, no ready', async () => {
-  const { channel, amqp, events } = channelRig();
-  amqp.onNew = ch => { ch.holdCheck = []; };
-  channel.create();
-  await flush();
+// amqplib rejects the pending call when the channel closes: no error may follow a close()
+test('close() while a create waits on the broker: channel closes, no ready, no error', async t => {
+  const rows = {
+    'queue check': [CONFIG, ch => { ch.holdCheck = true; }],
+    'exchange assert': [{ ...CONFIG, exchange: { name: 'ex', type: 'direct' } },
+      ch => { ch.holdExchange = true; }],
+  };
+  for (const [name, [config, hold]] of Object.entries(rows)) {
+    await t.test(name, async () => {
+      const { channel, amqp, events, errors } = channelRig(config);
+      amqp.onNew = hold;
+      channel.create();
+      await flush();
+      channel.close();
+      await flush();
+      assert.strictEqual(amqp.made[0].closeCalls, 1);
+      assert.deepStrictEqual(events, []);
+      assert.deepStrictEqual(errors, [], 'an error after close()');
+      assert.strictEqual(channel.isAlive, false);
+    });
+  }
+});
+
+// the amqplib channel exists when 'Channel created' is announced, so a listener can close it
+test('close() from a Channel created listener closes the new amqplib channel', async t => {
+  const rows = {
+    'on the channel': async () => {
+      const { channel, amqp, events } = channelRig();
+      channel.on('info', i => { if (i?.message === 'Channel created') channel.close(); });
+      channel.create();
+      await flush();
+      return { made: amqp.made, events, gone: true };
+    },
+    'removeChannelById from a pool listener': async t2 => {
+      const rig = poolRig(t2);
+      rig.pool.on('info', i => {
+        if (i?.message === 'Channel created') rig.pool.removeChannelById(i.id);
+      });
+      await flush();
+      const gone = rig.pool.getAllChannels().length === 0;
+      return { made: rig.opened[0].made, events: rig.events, gone };
+    },
+  };
+  for (const [name, run] of Object.entries(rows)) {
+    await t.test(name, async t2 => {
+      const { made, events, gone } = await run(t2);
+      assert.strictEqual(made[0].closeCalls, 1, 'the amqplib channel stays open');
+      assert.deepStrictEqual(events, []);
+      assert.strictEqual(gone, true);
+    });
+  }
+});
+
+// close() during a re-create: the amqplib channel it replaced is already closed, the new one
+// must be closed too
+test('close() during a re-create in flight: the new amqplib channel closes', async () => {
+  const { channel, amqp, events, fake } = await readyRig();
+  fake().brokerClose();
+  amqp.hold = true;
+  channel.alive;                       // the read starts the re-create
   channel.close();
-  amqp.made[0].holdCheck.forEach(release => release());
+  amqp.held[0].release();
   await flush();
-  assert.strictEqual(amqp.made[0].closeCalls, 1);
-  assert.deepStrictEqual(events, []);
+  assert.strictEqual(amqp.made[1].closeCalls, 1, 'the late amqplib channel stays open');
+  assert.deepStrictEqual(events, ['ready']);
   assert.strictEqual(channel.isAlive, false);
+});
+
+test('close() during the re-create a reconnect starts: the new channel closes', async t => {
+  const rig = await readyPool(t);
+  rig.onOpen = connection => { connection.hold = true; };
+  rig.opened[0].emit('close');         // the connection drops
+  await tick(t, INTERVAL);             // it reconnects, Connection.connection() re-creates
+  assert.strictEqual(rig.opened[1].creates, 1);
+  rig.channel().close();
+  rig.opened[1].held[0].release();
+  await flush();
+  assert.strictEqual(rig.opened[1].made[0].closeCalls, 1, 'the late amqplib channel stays open');
+  assert.deepStrictEqual(rig.events, ['ready']);
 });
 
 // a failed create schedules its retry; the control channel shows the timer exists
@@ -277,7 +356,7 @@ test('a channel never closed is re-created when its connection reconnects', asyn
 
 // ---- unchanged: a channel never closed re-creates, ready once, recreated after ----
 
-test('after a broker-side close an alive read re-creates; ready once, then recreated', async () => {
+test('after a broker-side close an alive read re-creates; ready, then recreated', async () => {
   const { channel, amqp, events, fake } = await readyRig();
   fake().brokerClose();
   assert.strictEqual(channel.isAlive, false);
@@ -384,18 +463,23 @@ test('a closed channel counts as down in amqp_pool.channel.count until it is rem
 const URL_ = process.env.FAMQP_TEST_URL;
 const skip = URL_ ? false : 'FAMQP_TEST_URL not set';
 
-async function until(condition, ms = 5000) {
-  const end = Date.now() + ms;
-  while (!await condition()) {
-    if (Date.now() > end) throw new Error('timed out');
-    await flush();
+// Polls read() up to `reads` times, a pause between them, until it returns `want`; gives up
+// naming the condition and the last value read.
+async function until(label, read, want, reads = 250) {
+  let last;
+  for (let i = 0; i < reads; i++) {
+    last = await read();
+    if (last === want) return;
+    await new Promise(resolve => setTimeout(resolve, 20));
   }
+  throw new Error(`gave up after ${reads} reads: ${label} wanted ${want}, last ${last}`);
 }
 
 // A pool consuming from its own queue; `consumers()` is the broker's own count for that queue.
 async function livePool(t) {
   const u = new URL(URL_);
-  const queue = `famqp-chclose-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const unique = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const queue = `famqp-chclose-${unique}`;
   const admin = await amqplib.connect(URL_);
   const adminCh = await admin.createChannel();
   await adminCh.assertQueue(queue, { durable: false, autoDelete: false });
@@ -416,7 +500,8 @@ async function livePool(t) {
   });
   const consumers = async () => (await adminCh.checkQueue(queue)).consumerCount;
   const created = () => infos.filter(i => i?.message === 'channel created').length;
-  await until(async () => created() === 1 && await consumers() === 1);
+  const state = async () => `${created()}/${await consumers()}`;
+  await until('channels created / consumers', state, '1/1');
   const connection = pool.connections[0];
   const calls = { n: 0 };
   const create = connection.amqpConnection.createConfirmChannel.bind(connection.amqpConnection);
@@ -427,11 +512,11 @@ async function livePool(t) {
   return { pool, consumers, created, calls };
 }
 
-test('live: removeChannelById ends the consumer, a publish makes no channel', { skip }, async t => {
+test('live: removeChannelById ends the consumer, publish makes no channel', { skip }, async t => {
   const { pool, consumers, created, calls } = await livePool(t);
   const channel = pool.getAllChannels()[0];
   await pool.removeChannelById(channel._id);
-  await until(async () => await consumers() === 0);
+  await until('consumers on the queue', consumers, 0);
   assert.deepStrictEqual(pool.getAllChannels(), []);
   pool.publish('after-removal');
   assert.strictEqual(calls.n, 0, 'the publish created a channel');
@@ -443,7 +528,7 @@ test('live: a closed channel left in the pool is not re-created by publish', { s
   const { pool, consumers, created, calls } = await livePool(t);
   const channel = pool.getAllChannels()[0];
   channel.close();
-  await until(async () => await consumers() === 0);
+  await until('consumers on the queue', consumers, 0);
   pool.publish('after-close');
   assert.strictEqual(calls.n, 0, 'the publish created a channel');
   assert.strictEqual(pool.msgCache.length, 1);
