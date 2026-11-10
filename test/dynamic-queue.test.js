@@ -63,7 +63,7 @@ test('dynamic consume enters consume() twice at most', async () => {
 
 test('no name from the broker: an error event and no consume', async () => {
   const { channel, fake, errors } = await ready(dynamic, c => {
-    c.checkQueue = () => Promise.resolve({});
+    c.assertQueue = () => Promise.resolve({});
   });
   let consumed = 0;
   fake().consume = () => { consumed++; return Promise.resolve({}); };
