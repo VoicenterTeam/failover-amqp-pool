@@ -63,15 +63,17 @@ class AMQPPool extends EventEmitter {
 
     this.addConnection(rawConfig);
 
-    process.on('SIGINT', () => {
-      this.stop((err) =>  {
-        this.emit('info', "Exit on SIGINT")
-        process.exit(err ? 1 : 0);
-      })
-    });
+    process.on('SIGINT', this.#onSigint);
     this.#unwatch = watchPool(() => this.#reading());
   }
   #unwatch;
+  // the pool's own SIGINT listener; stop() removes exactly this one
+  #onSigint = () => {
+    this.stop((err) =>  {
+      this.emit('info', "Exit on SIGINT")
+      process.exit(err ? 1 : 0);
+    })
+  };
 
   // The pool's state for the observable counts; isAlive, as `alive` would re-create channels
   #reading() {
@@ -94,6 +96,7 @@ class AMQPPool extends EventEmitter {
   
   async stop() {
     clearInterval(this.interval);
+    process.off('SIGINT', this.#onSigint);
     this.#unwatch();
     this.removeAllListeners();
     // a channel's error while the connections close is expected, and must not throw
