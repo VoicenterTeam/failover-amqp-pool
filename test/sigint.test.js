@@ -32,7 +32,8 @@ function mockBroker(t) {
   });
 }
 const connected = async (pool) => {
-  for (let i = 0; i < 1000 && !pool.connections[0].alive; i++) await new Promise(r => setTimeout(r, 5));
+  const nap = () => new Promise(r => setTimeout(r, 5));
+  for (let i = 0; i < 1000 && !pool.connections[0].alive; i++) await nap();
   assert.ok(pool.connections[0].alive, 'the pool never connected');
 };
 
