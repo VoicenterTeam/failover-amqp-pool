@@ -3,7 +3,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const Channel = require('../Channel');
-const { startMetrics } = require('./helpers/otel');
+const api = require('@opentelemetry/api');
+const { startTracing, startMetrics } = require('./helpers/otel');
 const { FakeAmqpChannel } = require('./helpers/fakes');
 
 async function readyChannel() {
@@ -75,4 +76,21 @@ test('a failing sendToQueue is counted with its error.type and rethrown', async 
   const sent = await points('messaging.client.sent.messages');
   const got = sent.map(p => [p.attributes['error.type'], p.value]);
   assert.deepStrictEqual(got, [['RangeError', 1]]);
+});
+
+test('sendToQueue is a PRODUCER span on the default exchange with the catalogue attributes', async () => {
+  const { spans } = startTracing();
+  const { channel } = await readyChannel();
+  channel.sendToQueue('target', { a: 1 });
+  const [span] = await spans();
+  assert.strictEqual(span.name, 'publish amq.default');
+  assert.strictEqual(span.kind, api.SpanKind.PRODUCER);
+  assert.deepStrictEqual(span.attributes, {
+    'messaging.system': 'rabbitmq',
+    'messaging.operation.name': 'publish',
+    'messaging.operation.type': 'send',
+    'messaging.destination.name': 'amq.default',
+    'server.address': 'rabbit.example',
+    'server.port': 5673,
+  });
 });
