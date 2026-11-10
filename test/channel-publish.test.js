@@ -49,6 +49,16 @@ test('a caller props object still receives its messageId and timestamp', async (
   assert.strictEqual(fake().published[0].options.messageId, props.messageId);
 });
 
+test('the same props object published twice keeps its messageId', async () => {
+  const { channel } = await readyChannel();
+  const props = {};
+  channel.publish({ a: 1 }, 'rk', props);
+  const first = props.messageId;
+  channel.publish({ a: 1 }, 'rk', props);
+  assert.ok(first);
+  assert.strictEqual(props.messageId, first);
+});
+
 test('sendToQueue sends the JSON buffer to amqplib with the queue name', async () => {
   const { channel, fake } = await readyChannel();
   const obj = { a: 1 };
@@ -78,7 +88,7 @@ test('a failing sendToQueue is counted with its error.type and rethrown', async 
   assert.deepStrictEqual(got, [['RangeError', 1]]);
 });
 
-test('sendToQueue is a PRODUCER span on the default exchange with the catalogue attributes', async () => {
+test('sendToQueue is a PRODUCER span on amq.default with the catalogue attributes', async () => {
   const { spans } = startTracing();
   const { channel } = await readyChannel();
   channel.sendToQueue('target', { a: 1 });
