@@ -282,10 +282,18 @@ class Channel extends EventEmitter {
       if(!this.isConsumable){
         this.emit('info', {message: 'consume queue name is missing creating dynamic queue' })
         this.#temporaryQueue = true;
-        this.#createQueue(`${this._id}:${os.hostname}`, this.queueOptions).then( m => {
-          this.queue.name = m.queue 
+        // it names the queue itself, so it declares it directly: a passive check of a new name
+        // gets a 404 that closes the channel, and the consume would find the channel dead
+        this.amqpChannel.assertQueue(`${this._id}:${os.hostname}`, this.queueOptions).then( asserted => {
+          const name = asserted?.queue;
+          if(!name){
+            this.emit('error', {message: 'dynamic queue has no name', channelId: this._id})
+            return;
+          }
+          this.queue.name = name
           this.emit('info', `Queue created dynamic: ${this.queue.name}`)
-          this.#bindQueue(this.queue.name, this.exchange.name, this?.binding?.pattern || '', this?.binding?.options || {}).then( b => {
+          // returned, so a refused bind reaches the catch below as an error event
+          return Promise.resolve(this.#bindQueue(this.queue.name, this.exchange.name, this?.binding?.pattern || '', this?.binding?.options || {})).then( () => {
             this.emit('info', {message: `consume from queue: ${this.queue.name}`})
             this.consume();
           });
