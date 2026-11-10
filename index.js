@@ -90,26 +90,23 @@ class AMQPPool extends EventEmitter {
   }
   
   async stop() {
-    let promises = []
     clearInterval(this.interval);
     this.#unwatch();
     this.removeAllListeners();
-    for (const [connectionIndex, _connection] of this.connections.entries()) {
-      promises.push(
-        new Promise( (resolve) => {
-          if(!_connection.alive){
-              this.connections.splice(connectionIndex, 1);
-              return resolve(connectionIndex)
-          }
-        _connection.once('close', () => {
-          this.connections.splice(connectionIndex, 1);
-          resolve(connectionIndex)
-        })
-        _connection.disconnect();
-      })
-      )
-    }
-    return Promise.all(promises)
+    // a channel's error while the connections close is expected, and must not throw
+    this.on('error', () => {});
+    return Promise.all([...this.connections].map((connection, index) => new Promise((resolve) => {
+      const removed = () => {
+        const at = this.connections.indexOf(connection);
+        if (at !== -1) this.connections.splice(at, 1);
+        resolve(index);
+      };
+      // a live connection is gone when it has closed; a down one, when its retries are stopped
+      const live = connection.alive;
+      if (live) connection.once('close', removed);
+      connection.disconnect();
+      if (!live) removed();
+    })));
   }
 
   addConnection(rawConfig) {

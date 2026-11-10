@@ -6,6 +6,7 @@ const { countConnectionError, countReconnect } = require('./telemetry/metrics');
 
 class Connection extends EventEmitter {
   #isAlive = false;
+  #retryTimer = null;
   constructor(url, config) {
     super();
     this.url = url;
@@ -32,21 +33,38 @@ class Connection extends EventEmitter {
     return this.#isAlive
   }
 
+  // The next start() after a failed connect or a close; none once disconnect() has run
+  #scheduleRetry() {
+    if (!this.reconnectOnClose) return;
+    clearTimeout(this.#retryTimer);
+    this.#retryTimer = setTimeout(() => {
+      this.#retryTimer = null;
+      if (!this.reconnectOnClose) return;
+      countReconnect(this.url);
+      this.start();
+    }, this.reconnectInterval);
+  }
+
+  // A connect that resolved after disconnect(): nothing is waiting for it
+  #discard(connection) {
+    connection.on('error', () => {});
+    try {
+      Promise.resolve(connection.close()).catch(() => {});
+    } catch (error) {
+      // already closing
+    }
+  }
+
   start() {
     if (!this.alive) {
       this.emit('info', { message: 'Connecting', url: this.safeUrl})
       amqplib.connect(this.url, {timeout: this.timeout ,clientProperties: {connection_name: this.connection_name}})
       .then((connection) => {
+          if (!this.reconnectOnClose) return this.#discard(connection);
           this.amqpConnection = connection;
           this.amqpConnection.on('close', (e) => {
             this.alive = false;
-            let timeOutReconnect = setTimeout(() => {
-                clearTimeout(timeOutReconnect)
-                if(this.reconnectOnClose) {
-                  countReconnect(this.url);
-                  this.start();
-                }
-            }, this.reconnectInterval);
+            this.#scheduleRetry();
 
             this.emit('close', { msg: "connection closed", url: this.safeUrl});
           });
@@ -66,11 +84,7 @@ class Connection extends EventEmitter {
           this.alive = false;
           countConnectionError(this.url, error);
           this.emit('error', { error: error , url: this.safeUrl})
-          let timeout = setTimeout(() => {
-            clearTimeout(timeout);
-            countReconnect(this.url);
-            this.start();
-          }, this.reconnectInterval);
+          this.#scheduleRetry();
         });
     }
   }
@@ -97,6 +111,8 @@ class Connection extends EventEmitter {
   disconnect() {
     this.alive = false;
     this.reconnectOnClose = false;
+    clearTimeout(this.#retryTimer);
+    this.#retryTimer = null;
     if (this.amqpConnection) {
       this.amqpConnection.close();
       this.amqpConnection = undefined;
