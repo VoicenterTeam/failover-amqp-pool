@@ -154,3 +154,59 @@ test('#27 under an SDK a call with no options still carries the traceparent', as
   assert.match(fake().sent[0].rest[0].headers.traceparent, /^00-[0-9a-f]{32}-/);
 });
 
+// ---- #30 array binding options are awaited
+
+const headers = [{ a: 1 }, { b: 2 }];
+
+test('#30 the dynamic consume waits for every bind of an array', async () => {
+  const { channel, fake } = await ready(
+    { ...dynamic(), binding: { enabled: true, pattern: 'rk', options: headers } });
+  fake().holdBinds = true;
+  channel.consume();
+  await settle();
+  assert.deepStrictEqual(fake().binds, headers);
+  assert.deepStrictEqual(fake().consumed, [], 'consume started before the binds finished');
+  fake().pendingBinds.forEach(done => done());
+  await settle();
+  assert.deepStrictEqual(fake().consumed, [`${channel._id}:${os.hostname}`]);
+});
+
+test('#30 one refused bind of an array is an error event and no consume', async () => {
+  const { channel, errors, fake } = await ready(
+    { ...dynamic(), binding: { enabled: true, pattern: 'rk', options: headers } });
+  fake().refuse = header => header.b === 2;
+  channel.consume();
+  await settle();
+  assert.deepStrictEqual(errors.map(e => e.message), ['bind refused']);
+  assert.deepStrictEqual(fake().consumed, []);
+});
+
+test('#30 a named queue whose array bind is refused does not become ready', async () => {
+  const connection = {
+    alive: true,
+    url: 'amqp://user:secret@rabbit.example:5673',
+    config: { channelRetryMaxInterval: 60000 },
+    reconnectInterval: 60000,
+    amqpConnection: {
+      createConfirmChannel: () => {
+        const c = new BindingChannel();
+        c.refuse = header => header.b === 2;
+        return Promise.resolve(c);
+      },
+    },
+  };
+  const channel = new Channel(connection, {
+    exchange: { name: 'events' }, queue: { name: 'work' }, prefetch: 1,
+    binding: { enabled: true, pattern: 'rk', options: headers },
+  });
+  const errors = [];
+  channel.on('error', e => errors.push(e));
+  let readyEmitted = false;
+  channel.on('ready', () => { readyEmitted = true; });
+  channel.create();
+  await new Promise(resolve => channel.once('error', resolve));
+  assert.strictEqual(readyEmitted, false);
+  assert.strictEqual(errors[0].message, 'cant establish a channel');
+  await channel.close();
+});
+
