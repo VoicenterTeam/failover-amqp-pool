@@ -133,8 +133,9 @@ class Channel extends EventEmitter {
           }
           let old_id = this._id;
           this._id = this.#createID();
-          this.emit('info', {message: `Channel created`, id: this._id, old_id})
+          // set before the event: a listener that closes the channel must find it to close
           this.amqpChannel = amqpChannel;
+          this.emit('info', {message: `Channel created`, id: this._id, old_id})
           // a replaced amqplib channel can still close or error late; only the current one counts
           this.amqpChannel.on('close', () => {
             if (amqpChannel !== this.amqpChannel) return;
@@ -172,6 +173,8 @@ class Channel extends EventEmitter {
                 this.emit('info', {message: `Durable Escape for connect`})
                 return this.#createChannel();
               }
+              // a close() rejects the pending assert: not an error to report
+              if (this.#closed) return;
               this.emit('error', {message: 'cant assert a exchange ' + error?.message, err: error})
             });
           }
@@ -206,7 +209,7 @@ class Channel extends EventEmitter {
           this.#isConnecting = false;
           clearTimeout(this.#retryTimer);
           this.#retryTimer = null;
-          // close() closed the amqplib channel; no 'ready', and no retry (create() would refuse it)
+          // close() closed the amqplib channel: no 'ready', no retry (create() refuses it)
           if (this.#closed) return;
           if (!created) {
             try { this.amqpChannel?.close()?.catch?.(() => {}); } catch (e) {}   // already closed
@@ -252,7 +255,8 @@ class Channel extends EventEmitter {
                     return true;
                   });
             }
-            this.emit('error',err)
+            // a close() rejects the pending check: not an error to report
+            if (!this.#closed) this.emit('error',err)
             throw err;
         })
   }
