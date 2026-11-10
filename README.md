@@ -17,6 +17,12 @@ A robust AMQP client with connection pooling, automatic failover, and Winston tr
 
 - `stop()` now ends every retry: a connection that is down or still connecting is disconnected and
   not retried, `stop()` removes every connection, and an `'error'` during teardown no longer throws.
+- `index.d.ts` is a module (`export =`), declared in package.json's `types`: the config types,
+  `Channel` and `Connection` are in the `AMQPPool` namespace, `stop()` takes no callback and
+  returns a promise, and `sendToQueue(queue, msg, options?)` is typed. See
+  [TypeScript](#typescript).
+- `winston-transport` is an optional peer dependency, needed only for the Winston transport.
+  `nanoid` is no longer a dependency; nothing used it.
 
 ## Breaking changes in 4.0.0
 
@@ -78,6 +84,30 @@ A robust AMQP client with connection pooling, automatic failover, and Winston tr
 ```bash
 npm install @voicenter-team/failover-amqp-pool
 ```
+
+## TypeScript
+
+The package ships its types. The module is the pool class, so import it with `import = require`,
+or as a default import when `esModuleInterop` is on:
+
+```typescript
+import AMQPPool = require('@voicenter-team/failover-amqp-pool');
+// or: import AMQPPool from '@voicenter-team/failover-amqp-pool';
+
+const config: AMQPPool.AmqpConfig[] = [{
+  connection: { host: 'localhost', port: 5672, username: 'guest', password: 'guest' },
+  channel: { exchange: { name: 'my-exchange' } }   // `type` is optional
+}];
+
+async function main(): Promise<void> {
+  const amqp = new AMQPPool(config);
+  amqp.on('ready', (channel: AMQPPool.Channel) => channel.sendToQueue('my-queue', 'hello'));
+  await amqp.stop();
+}
+```
+
+The declarations import `events` and `amqplib` types: install `@types/node` in a TypeScript
+project (amqplib ships its own types).
 
 ## Basic Usage
 
@@ -358,7 +388,8 @@ the login is refused. Use ASCII credentials.
 
 ## Winston Transport
 
-The package includes a Winston transport:
+The package includes a Winston transport. It needs `winston-transport` (installed with
+`winston`), an optional peer dependency:
 
 ```javascript
 const winston = require('winston');
@@ -495,7 +526,7 @@ error's class (`Error`, `RangeError`, `TypeError`) or `_OTHER`. No message conte
 or error text is recorded.
 
 A pool that is not stopped is still running and is still counted, so call `stop()` on a pool you
-discard (collecting an abandoned pool is tracked in #22).
+discard. `stop()` also removes the pool's SIGINT listener, so a stopped pool can be collected.
 
 The pm2 names map as: `rabbit_message_publish_rate` → `messaging.client.sent.messages`,
 `rabbit_message_consume_rate` → `messaging.client.consumed.messages`, `rabbit_message_ack_rate`
