@@ -210,3 +210,47 @@ test('#30 a named queue whose array bind is refused does not become ready', asyn
   await channel.close();
 });
 
+// ---- live broker: the dynamic queue carries x-expires 1800000
+
+test('live: a dynamic queue carries x-expires 1800000 on the broker',
+  { skip: URL_ ? false : 'FAMQP_TEST_URL not set' }, async t => {
+  const amqplib = require('amqplib');
+  const AMQPPool = require('..');
+  const u = new URL(URL_);
+  const exchange = `famqp-chsmall-${process.pid}-${Date.now()}`;
+  const admin = await amqplib.connect(URL_);
+  const adminCh = await admin.createChannel();
+  await adminCh.assertExchange(exchange, 'fanout', { durable: false, autoDelete: true });
+  const pool = new AMQPPool([{
+    connection: { host: u.hostname, port: Number(u.port), username: decodeURIComponent(u.username),
+      password: decodeURIComponent(u.password), ssl: false, reconnectInterval: 50 },
+    channel: { prefetch: 5, exchange: { name: exchange, type: 'fanout' },
+      binding: { enabled: true, options: [{ x: 1 }, { y: 2 }] },
+      queue: { options: { durable: false, autoDelete: false, messageTtl: 60000 } } },
+  }]);
+  let dynamicName;
+  const consuming = new Promise(resolve => pool.on('ready', ch => {
+    dynamicName = `${ch._id}:${os.hostname}`;
+    ch.on('info', i => { if (i?.message?.startsWith?.('consume from queue')) resolve(); });
+    ch.consume();
+  }));
+  pool.on('error', () => {});
+  t.after(async () => {
+    const stopped = pool.stop();
+    pool.on('error', () => {});
+    await stopped.catch(() => {});
+    if (dynamicName) await adminCh.deleteQueue(dynamicName).catch(() => {});
+    await adminCh.deleteExchange(exchange).catch(() => {});
+    await admin.close().catch(() => {});
+  });
+  await consuming;
+  const base = { durable: false, autoDelete: false, messageTtl: 60000,
+    arguments: { 'x-consumer-timeout': 7200000 } };
+  const declare = options => admin.createChannel().then(c => {
+    c.on('error', () => {});   // a refused declare closes the channel
+    return c.assertQueue(dynamicName, options);
+  });
+  await assert.doesNotReject(declare({ ...base, expires: 1800000 }));
+  await assert.rejects(declare({ ...base, expires: 1799999 }), /PRECONDITION_FAILED/);
+  await assert.rejects(declare(base), /PRECONDITION_FAILED/);
+});
