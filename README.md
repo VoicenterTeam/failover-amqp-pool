@@ -16,8 +16,10 @@ A robust AMQP client with connection pooling, automatic failover, and Winston tr
 ## Breaking changes in 4.0.0
 
 - `@pm2/io` is gone, and with it the pm2 metrics (`[AMQP_POOL] [host]rabbit_*`). Metrics and
-  spans go through `@opentelemetry/api`, a peer dependency (see [Telemetry](#telemetry)).
-  Nothing is recorded until the app starts an OpenTelemetry SDK.
+  spans go through `@opentelemetry/api`, a peer dependency (see [Telemetry](#telemetry)): the app
+  installs it itself (`npm install @opentelemetry/api`), else loading the package fails with
+  `Cannot find module '@opentelemetry/api'`. Nothing is recorded until the app starts an
+  OpenTelemetry SDK.
 - Loading the package no longer adds `@pm2/io`'s `uncaughtException` and `unhandledRejection`
   listeners. Its rejection listener only logged, so an app that relied on it to survive an
   unhandled rejection now exits, Node's default. Load `@pm2/io` in the app to keep it.
@@ -442,10 +444,10 @@ started after the pool loads is picked up. The meter and the tracer are named
 |---|---|---|---|
 | `messaging.client.sent.messages` | counter | `{message}` | `messaging.system`, `messaging.operation.name` (`publish`), `messaging.operation.type` (`send`), `messaging.destination.name` (the exchange), `server.address`, `server.port`, `error.type` when it failed |
 | `messaging.client.consumed.messages` | counter | `{message}` | as above with `process`/`process`, the queue as the destination |
-| `amqp_pool.client.settled.messages` | counter | `{message}` | `messaging.operation.name` `ack` or `nack`, type `settle`, the queue |
-| `amqp_pool.connection.errors` | counter | `{error}` | `server.address`, `server.port`, `error.type` (the broker's reply code, e.g. `320`, or the socket's, e.g. `ECONNREFUSED`) |
-| `amqp_pool.connection.reconnects` | counter | `{reconnect}` | `server.address`, `server.port` |
-| `amqp_pool.connection.count` | observable up-down counter | `{connection}` | `server.address`, `server.port`, `amqp_pool.state` (`alive`, `down`) |
+| `amqp_pool.client.settled.messages` | counter | `{message}` | `messaging.system`, `messaging.operation.name` `ack` or `nack`, type `settle`, the queue |
+| `amqp_pool.connection.errors` | counter | `{error}` | `messaging.system`, `server.address`, `server.port`, `error.type` (the broker's reply code, e.g. `320`, or the socket's, e.g. `ECONNREFUSED`) |
+| `amqp_pool.connection.reconnects` | counter | `{reconnect}` | `messaging.system`, `server.address`, `server.port` |
+| `amqp_pool.connection.count` | observable up-down counter | `{connection}` | `messaging.system`, `server.address`, `server.port`, `amqp_pool.state` (`alive`, `down`) |
 | `amqp_pool.channel.count` | observable up-down counter | `{channel}` | as above |
 | `amqp_pool.message.cached` | observable up-down counter | `{message}` | `messaging.system` |
 | `publish {exchange}` | PRODUCER span | | as `sent.messages`; its context goes in the message headers |
