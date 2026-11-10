@@ -99,3 +99,58 @@ test('#23 a named queue keeps an expires of its own', async () => {
   assert.strictEqual(fake().asserted.options.expires, 90000);
 });
 
+// ---- #27 sendToQueue: dead-channel check and options. Without an SDK first: the SDK, once
+// started, stays for the rest of the file.
+
+test('#27 sendToQueue with two arguments sends no third argument', async () => {
+  const { channel, fake } = await ready(named(), { strict: true });
+  channel.sendToQueue('target', { a: 1 });
+  assert.deepStrictEqual(fake().sent[0].rest, []);
+});
+
+test('#27 sendToQueue passes its options to amqplib as the third argument', async () => {
+  const { channel, fake } = await ready(named(), { strict: true });
+  const options = { persistent: true, headers: { h: 1 } };
+  channel.sendToQueue('target', { a: 1 }, options);
+  assert.deepStrictEqual(fake().sent[0].rest, [{ persistent: true, headers: { h: 1 } }]);
+});
+
+test('#27 sendToQueue on a dead channel emits, counts channel_dead and throws like publish', async t => {
+  const { channel, connection, errors, fake } = await ready(named(), { strict: true });
+  const { points } = startMetrics(t);
+  fake().emit('close');
+  connection.alive = false;   // a dead connection: reading alive starts no re-create
+  assert.throws(() => channel.publish({ a: 1 }, 'rk'), { message: 'Channel is dead!' });
+  errors.length = 0;
+  assert.throws(() => channel.sendToQueue('target', { a: 1 }), new Error('Channel is dead!'));
+  assert.deepStrictEqual(errors, [{
+    message: 'channel is dead!', channelId: channel._id, queue: 'work', exchange: 'events',
+  }]);
+  assert.strictEqual(fake().sent.length, 0);
+  const sent = await points('messaging.client.sent.messages');
+  const dead = sent.filter(p => p.attributes['error.type'] === 'channel_dead'
+    && p.attributes['messaging.destination.name'] === 'amq.default');
+  assert.deepStrictEqual(dead.map(p => [p.attributes['messaging.destination.name'], p.value]),
+    [['amq.default', 1]]);
+});
+
+test('#27 under an SDK the options carry a traceparent; the caller\'s object is unchanged', async () => {
+  const { spans } = startTracing();
+  const { channel, fake } = await ready(named(), { strict: true });
+  const options = { persistent: true, headers: { h: 1 } };
+  channel.sendToQueue('target', { a: 1 }, options);
+  const [span] = await spans();
+  const sent = fake().sent[0].rest[0];
+  assert.strictEqual(sent.persistent, true);
+  assert.strictEqual(sent.headers.h, 1);
+  assert.match(sent.headers.traceparent, new RegExp(`^00-${span.spanContext().traceId}-`));
+  assert.deepStrictEqual(options, { persistent: true, headers: { h: 1 } });
+});
+
+test('#27 under an SDK a call with no options still carries the traceparent', async () => {
+  startTracing();
+  const { channel, fake } = await ready(named(), { strict: true });
+  channel.sendToQueue('target', { a: 1 });
+  assert.match(fake().sent[0].rest[0].headers.traceparent, /^00-[0-9a-f]{32}-/);
+});
+
