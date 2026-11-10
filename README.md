@@ -262,6 +262,11 @@ amqp.publish(message, 'all', routingKey, {
 });
 ```
 
+`publish` gives each message a `messageId` and `timestamp`. Without options, the id is new on
+every publish and the channel's default options are left untouched. Options you pass are
+written to in place, so a pool retry of a cached message that had your options keeps its
+`messageId`; a message published without options gets a new id on each retry.
+
 ## Full Configuration Options
 
 ```javascript
@@ -450,7 +455,7 @@ started after the pool loads is picked up. The meter and the tracer are named
 | `amqp_pool.connection.count` | observable up-down counter | `{connection}` | `messaging.system`, `server.address`, `server.port`, `amqp_pool.state` (`alive`, `down`) |
 | `amqp_pool.channel.count` | observable up-down counter | `{channel}` | as above |
 | `amqp_pool.message.cached` | observable up-down counter | `{message}` | `messaging.system` |
-| `publish {exchange}` | PRODUCER span | | as `sent.messages`; its context goes in the message headers |
+| `publish {exchange}` | PRODUCER span | | as `sent.messages`; its context goes in the message headers (`sendToQueue`'s span injects none) |
 | `process {queue}` | CONSUMER span | | as `consumed.messages`; parent is the context in the headers; active while the `'message'` listeners run synchronously |
 
 `server.port` is left out on the scheme's default port. The default exchange is `amq.default`.
