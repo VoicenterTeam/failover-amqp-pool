@@ -14,7 +14,9 @@ function offlinePool(t, channels) {
   const errors = [];
   pool.on('error', e => errors.push(e));
   pool.alive = channels.slice();
+  pool.all = channels.slice();
   pool.getAliveChannels = () => pool.alive.slice();
+  pool.getAllChannels = () => pool.all.slice();
   return { pool, errors };
 }
 function fake(name, failures = 0) {
@@ -116,14 +118,52 @@ test('all: every alive channel gets the message exactly once on the first attemp
   assert.strictEqual(pool.msgCache.length, 0);
 });
 
-test('other filters: first alive, rr and a function filter publish as before', t => {
+test('all: a channel removed from the pool has its entry dropped, reaching no other channel', t => {
+  const [A, B] = [fake('A'), fake('B', 1)];
+  const { pool } = offlinePool(t, [A, B]);
+  pool.publish({ n: 1 }, 'all');
+  pool.all = [A];
+  pool.alive = [A];
+  retry(pool);
+  assert.strictEqual(pool.msgCache.length, 0);
+  assert.deepStrictEqual(counts(A, B), [1, 0]);
+});
+
+test('first alive: publishes on the first alive channel', t => {
   const [A, B] = [fake('A'), fake('B')];
   const { pool } = offlinePool(t, [A, B]);
   pool.publish({ n: 1 });
   assert.deepStrictEqual(counts(A, B), [1, 0]);
+});
+
+test('rr: publishes on alternate channels', t => {
+  const [A, B] = [fake('A'), fake('B')];
+  const { pool } = offlinePool(t, [A, B]);
+  pool.publish({ n: 1 }, 'rr');
   pool.publish({ n: 2 }, 'rr');
-  pool.publish({ n: 3 }, 'rr');
-  assert.deepStrictEqual(counts(A, B), [2, 1]);
-  pool.publish({ n: 4 }, chs => [chs[1]]);
-  assert.deepStrictEqual(counts(A, B), [2, 2]);
+  assert.deepStrictEqual(counts(A, B), [1, 1]);
+});
+
+test('function filter: publishes on the channels it returns', t => {
+  const [A, B] = [fake('A'), fake('B')];
+  const { pool } = offlinePool(t, [A, B]);
+  pool.publish({ n: 1 }, chs => [chs[1]]);
+  assert.deepStrictEqual(counts(A, B), [0, 1]);
+});
+
+test('function filter: a failed publish is reported as an error and cached', t => {
+  const A = fake('A', 1);
+  const { pool, errors } = offlinePool(t, [A]);
+  pool.publish({ n: 1 }, chs => [chs[0]]);
+  assert.strictEqual(errors.length, 1);
+  assert.strictEqual(pool.msgCache.length, 1);
+});
+
+test('function filter: one carrying an isAllRetry property still reports a failure', t => {
+  const A = fake('A', 1);
+  const { pool, errors } = offlinePool(t, [A]);
+  const filter = chs => [chs[0]];
+  filter.isAllRetry = true;
+  pool.publish({ n: 1 }, filter);
+  assert.strictEqual(errors.length, 1);
 });
