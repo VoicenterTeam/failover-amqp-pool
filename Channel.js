@@ -2,8 +2,8 @@ const EventEmitter = require('events').EventEmitter,
       uuid = require('uuid').v4,
       hash = require('object-hash'),
       os = require('os'),
-      probe = require('@pm2/io'),
-      METRICS_NAMES = require('./metrics/names')
+      { countSent, countConsumed, countSettled, thrownType } = require('./telemetry/metrics'),
+      { publishing, processing } = require('./telemetry/spans')
 
 // message -> the amqplib channel that delivered it; a delivery tag is valid only there
 const deliveredOn = new WeakMap();
@@ -15,6 +15,7 @@ class Channel extends EventEmitter {
   #consumingOn = null;
   #retryTimer = null;
   #retryDelay = 0;
+  #temporaryQueue = false;
   constructor(connection, channelConfig) {
     super();
     this.hash = hash(channelConfig)
@@ -38,8 +39,15 @@ class Channel extends EventEmitter {
       this.prefetch = !isNaN(parseInt(channelConfig.prefetch)) ? parseInt(channelConfig.prefetch) : false;
     }
   }
-  get metrics (){
-      return this.connection.metrics
+  // The exchange as telemetry names it: the configured one. A per-call exchange that differs is
+  // _OTHER, so a caller's props cannot grow a series per value.
+  #exchangeName(options){
+    const configured = this.exchange?.name;
+    return !options?.exchange || options.exchange === configured ? configured : '_OTHER';
+  }
+  // The queue as telemetry names it; a queue the channel named for itself is temporary
+  get #destination(){
+    return { name: this.queue?.name, temporary: this.#temporaryQueue }
   }
   get isConsumable(){
     return this.queue && this.queue.name
@@ -53,6 +61,10 @@ class Channel extends EventEmitter {
   }
   set alive(isAlive){
     this.#isAlive = isAlive;
+  }
+  // alive without its side effect: reading `alive` re-creates a dead channel
+  get isAlive(){
+    return this.#isAlive;
   }
   get exchangeOptions(){
     return {
@@ -245,11 +257,19 @@ class Channel extends EventEmitter {
       options.timestamp = options?.timestamp || Math.round(new Date().getTime()/1000);
       if (this.alive) {
         let message = Buffer.from(msg);
-        this.amqpChannel.publish(options.exchange || this.exchange.name, topic || "", message, options)
+        const exchange = options.exchange || this.exchange.name;
+        const named = this.#exchangeName(options);
+        try {
+          publishing(this.connection.url, named, options, withContext =>
+            this.amqpChannel.publish(exchange, topic || "", message, withContext));
+        } catch (error) {
+          countSent(this.connection.url, named, thrownType(error));
+          throw error;
+        }
         this.emit("info", { message: 'message published', options: options, exchange: options.exchange || this.exchange, url: this.connection.safeUrl})
-        this.metrics?.metric(METRICS_NAMES.messageSuccessRate)?.mark()
+        countSent(this.connection.url, named);
       } else {
-        this.metrics?.metric(METRICS_NAMES.messageSuccessRate)?.mark(false)
+        countSent(this.connection.url, this.#exchangeName(options), 'channel_dead');
         this.emit('error', {message: 'channel is dead!', channelId: this._id, queue: this.queue?.name, exchange: this.exchange?.name})
         throw new Error('Channel is dead!')
       }
@@ -259,6 +279,7 @@ class Channel extends EventEmitter {
     if (this.alive) {
       if(!this.isConsumable){
         this.emit('info', {message: 'consume queue name is missing creating dynamic queue' })
+        this.#temporaryQueue = true;
         this.#createQueue(`${this._id}:${os.hostname}`, this.queueOptions).then( m => {
           this.queue.name = m.queue 
           this.emit('info', `Queue created dynamic: ${this.queue.name}`)
@@ -286,9 +307,11 @@ class Channel extends EventEmitter {
             if(!m.properties.timestamp) m.properties.timestamp = Math.round(new Date().getTime()/1000);
             m.properties.queue = this.queue.name;
             
-            this.metrics?.metric(METRICS_NAMES.consumeSuccessRate)?.mark()
-            this.emit('message', m);
-            this.emit('channelMessage', m)
+            countConsumed(this.connection.url, this.#destination);
+            processing(this.connection.url, this.#destination, m, () => {
+              this.emit('message', m);
+              this.emit('channelMessage', m)
+            });
           }
         }, {consumerTag: this._id}).catch(err => {
           this.emit('error', {message: 'consume failed', channelId: this._id, queue: this.queue?.name, error: err?.message});
@@ -310,7 +333,7 @@ class Channel extends EventEmitter {
       else if(this.#isStale(msg, 'ack')) return;
       else if(deliveryTag){
         this.amqpChannel.ack(msg);
-        this.metrics?.metric(METRICS_NAMES.ackSuccessRate)?.mark();
+        countSettled(this.connection.url, 'ack', this.#destination);
       }else {
         this.emit('error', {message: `DELIVERY TAG NOT FOUND ${messageId}`, channelId: this._id, queue: this.queue?.name, exchange: this.exchange?.name, messageId});
       }
@@ -324,6 +347,7 @@ class Channel extends EventEmitter {
 
       if (this.alive && deliveryTag && !this.#isStale(msg, 'nack')) {
         this.amqpChannel.nack(msg);
+        countSettled(this.connection.url, 'nack', this.#destination);
       }
     }
   }

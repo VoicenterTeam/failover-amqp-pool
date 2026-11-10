@@ -121,6 +121,8 @@ declare class Channel {
     isConsumable(): boolean;
     alive(): boolean;
     alive(isAlive: boolean): void;
+    /** Whether the channel is open, without the re-create that reading `alive` starts. */
+    readonly isAlive: boolean;
     queueOptions(): OptionsConf;
     create(): boolean;
 

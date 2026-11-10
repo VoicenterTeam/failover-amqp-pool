@@ -7,11 +7,29 @@ A robust AMQP client with connection pooling, automatic failover, and Winston tr
 - Multiple connection support with automatic failover
 - Channel pooling and management
 - Automatic reconnection on connection failures
-- Built-in metrics tracking
+- OpenTelemetry metrics and spans
 - Winston transport integration
 - Support for different message publishing strategies
 - Configurable queue and exchange settings
 - Flexible message consumption patterns
+
+## Breaking changes in 4.0.0
+
+- `@pm2/io` is gone, and with it the pm2 metrics (`[AMQP_POOL] [host]rabbit_*`). Metrics and
+  spans go through `@opentelemetry/api`, a peer dependency (see [Telemetry](#telemetry)): the app
+  installs it itself (`npm install @opentelemetry/api`), else loading the package fails with
+  `Cannot find module '@opentelemetry/api'`. Nothing is recorded until the app starts an
+  OpenTelemetry SDK.
+- Loading the package no longer adds `@pm2/io`'s `uncaughtException` and `unhandledRejection`
+  listeners. Its rejection listener only logged, so an app that relied on it to survive an
+  unhandled rejection now exits, Node's default. Load `@pm2/io` in the app to keep it.
+- `connection.metrics` and `channel.metrics` are gone. `channel.isAlive` reads the state
+  without the re-create that reading `alive` starts.
+- amqplib 2.3.1 (from 0.10), Node 18 or newer. `heartbeat: 0` still means the server's value.
+  A publish whose headers table is over 64 KiB throws a `RangeError`; the pool reports it as an
+  `'error'` and does not cache the message for retry.
+- A publish under a tracer SDK sends a copy of its options whose `headers` carry `traceparent`
+  (and `tracestate`), as the app's propagator writes them.
 
 ## Breaking changes in 3.0.0
 
@@ -255,7 +273,7 @@ amqp.publish(message, 'all', routingKey, {
     username: 'guest',           // Username
     password: 'guest',           // Password (URL-encoded for you; ASCII only, see below)
     vhost: '/',                  // Virtual host
-    heartbeat: 25,              // Heartbeat interval in seconds
+    heartbeat: 25,              // Heartbeat interval in seconds; 0 or unset takes the server's value
     timeout: 5000,              // Connection timeout
     reconnectInterval: 1500,    // Reconnection interval on failure, and the first channel create retry wait
     channelRetryMaxInterval: 30000 // Ceiling for the doubling channel create retry wait
@@ -414,17 +432,44 @@ To properly close all connections and channels:
 await amqp.stop();
 ```
 
-## Metrics
+## Telemetry
 
-The client includes built-in metrics tracking:
+The pool records through `@opentelemetry/api` (a peer dependency, `^1.9.0`) and never starts
+an SDK itself: with none started, nothing is recorded and nothing is computed for it. An SDK
+started after the pool loads is picked up. The meter and the tracer are named
+`@voicenter-team/failover-amqp-pool` with the package version. Every name is in
+`telemetry/catalogue.js`; telemetry never throws into a publish, a delivery or a connect.
 
-- Connection success/error rates
-- Message publish success rates
-- Consumer success rates
-- Channel and connection counts
-- Reconnection attempts
+| Name | Kind | Unit | Attributes |
+|---|---|---|---|
+| `messaging.client.sent.messages` | counter | `{message}` | `messaging.system`, `messaging.operation.name` (`publish`), `messaging.operation.type` (`send`), `messaging.destination.name` (the exchange), `server.address`, `server.port`, `error.type` when it failed |
+| `messaging.client.consumed.messages` | counter | `{message}` | as above with `process`/`process`, the queue as the destination |
+| `amqp_pool.client.settled.messages` | counter | `{message}` | `messaging.system`, `messaging.operation.name` `ack` or `nack`, type `settle`, the queue |
+| `amqp_pool.connection.errors` | counter | `{error}` | `messaging.system`, `server.address`, `server.port`, `error.type` (the broker's reply code, e.g. `320`, or the socket's, e.g. `ECONNREFUSED`) |
+| `amqp_pool.connection.reconnects` | counter | `{reconnect}` | `messaging.system`, `server.address`, `server.port` |
+| `amqp_pool.connection.count` | observable up-down counter | `{connection}` | `messaging.system`, `server.address`, `server.port`, `amqp_pool.state` (`alive`, `down`) |
+| `amqp_pool.channel.count` | observable up-down counter | `{channel}` | as above |
+| `amqp_pool.message.cached` | observable up-down counter | `{message}` | `messaging.system` |
+| `publish {exchange}` | PRODUCER span | | as `sent.messages`; its context goes in the message headers |
+| `process {queue}` | CONSUMER span | | as `consumed.messages`; parent is the context in the headers; active while the `'message'` listeners run synchronously |
 
-These metrics are available through the @pm2/io integration.
+`server.port` is left out on the scheme's default port. The default exchange is `amq.default`.
+A queue the pool names for itself is `messaging.destination.temporary: true` with no name, so
+it adds no series per channel. `error.type` of a publish or listener is `channel_dead`, the
+error's class (`Error`, `RangeError`, `TypeError`) or `_OTHER`. No message content, routing key
+or error text is recorded.
+
+A pool that is not stopped is still running and is still counted, so call `stop()` on a pool you
+discard (collecting an abandoned pool is tracked in #22).
+
+The pm2 names map as: `rabbit_message_publish_rate` → `messaging.client.sent.messages`,
+`rabbit_message_consume_rate` → `messaging.client.consumed.messages`, `rabbit_message_ack_rate`
+→ `amqp_pool.client.settled.messages` (now with nacks), `rabbit_error_rate` →
+`amqp_pool.connection.errors`, `rabbit_reconnected_connections_count` →
+`amqp_pool.connection.reconnects` (now only when a reconnect starts, not on `stop()`), the
+channel, connection and cache gauges → the three observable counts.
+`rabbit_alive_channels_count` counted every channel; `amqp_pool.channel.count` splits them by
+state. `rabbit_message_total_count` was never recorded and has no successor.
 
 ## License
 

@@ -1,6 +1,5 @@
 let process = require('process');
-const Metrics = require('./metrics')
-const METRICS_NAMES = require('./metrics/names')
+const { watchPool } = require('./telemetry/metrics');
 
 
 function build(pool, parsedConfig){
@@ -35,8 +34,11 @@ function _buildUrl(config) {
   if (config.vhost) {
     url += '/' + encodeURIComponent(String(config.vhost).replace(/^\//, ''));
   }
-  if (config.hasOwnProperty('heartbeat')) {
-    url += '?heartbeat=' + config.heartbeat;
+  // amqplib 2 reads heartbeat=0 (after parseInt, so also '0.5' or 'abc') as "no heartbeats";
+  // before it meant "the server's value", which is what leaving it out gives now
+  const heartbeat = parseInt(config.heartbeat, 10);
+  if (heartbeat > 0) {
+    url += '?heartbeat=' + heartbeat;
   }
   return url;
 }
@@ -64,35 +66,23 @@ class AMQPPool extends EventEmitter {
         process.exit(err ? 1 : 0);
       })
     });
-    this.metrics = new Metrics()
+    this.#unwatch = watchPool(() => this.#reading());
+  }
+  #unwatch;
 
-    // Metrics used to work with connections
+  // The pool's state for the observable counts; isAlive, as `alive` would re-create channels
+  #reading() {
+    const connections = [];
+    const channels = [];
+    for (const connection of this.connections) {
+      connections.push({ url: connection.url, alive: connection.alive });
+      for (const channel of connection.channels) channels.push({ url: connection.url, alive: channel.isAlive });
+    }
+    return { connections, channels, cached: this.msgCache.length };
   }
   start(msgCacheInterval = 2000) {
     this.interval = setInterval(() => {
-      let aliveChannels = this.getAllChannels().length
-      this.metrics.metric({
-        type: 'gauge',
-        name: 'rabbit_message_cached_count', 
-        value: () => this.msgCache.length,
-      })
-      this.metrics.metric({
-        type: 'gauge',
-        name: 'rabbit_all_channels_count',
-        value: () => (this.getAllChannels()).length,
-      })
-      this.metrics.metric({
-        type: 'gauge',
-        name: 'rabbit_alive_channels_count',
-        value: () => aliveChannels
-      })
-      this.metrics.metric({
-        type: 'gauge',
-        name: 'rabbit_connections_total_count',
-        value: () => this.connections.length,
-      })
-
-      if (this.msgCache.length > 0 && aliveChannels > 0) {
+      if (this.msgCache.length > 0 && this.getAllChannels().length > 0) {
         let m = this.msgCache.shift();
         this.publish(m.msg, m.filter, m.topic, m.props);
       }
@@ -102,6 +92,7 @@ class AMQPPool extends EventEmitter {
   async stop() {
     let promises = []
     clearInterval(this.interval);
+    this.#unwatch();
     this.removeAllListeners();
     for (const [connectionIndex, _connection] of this.connections.entries()) {
       promises.push(
@@ -151,12 +142,7 @@ class AMQPPool extends EventEmitter {
       else {
         if (filteredChannels instanceof Channel) filteredChannels = [filteredChannels];
         for (let channelIndex in filteredChannels) {
-          try {
-            filteredChannels[channelIndex].publish(msg, topic, props);
-          } catch (e) {
-            this.emit('error', e)
-            this.msgCache.push({msg, filter, topic, props});
-          }
+          this.#publishOn(filteredChannels[channelIndex], {msg, filter, topic, props}, true);
         }
       }
     } else if (filter === 'rr') {
@@ -164,38 +150,37 @@ class AMQPPool extends EventEmitter {
         if(this.rr_i >= channels.length) {
           this.rr_i = 0;
         }
-        try {
-          channels[this.rr_i++].publish(msg, topic, props);
-        } catch (e) {
-          this.msgCache.push({msg, filter, topic, props});
-        }
+        this.#publishOn(channels[this.rr_i++], {msg, filter, topic, props}, false);
       } else {
         this.msgCache.push({msg, filter, topic, props});
       }
     } else if (filter === 'all') {
       if (channels.length > 0) {
         for (let channelIndex in channels) {
-          try {
-            channels[channelIndex].publish(msg, topic, props);
-          } catch (e) {
-            this.msgCache.push({msg, filter, topic, props});
-          }
+          this.#publishOn(channels[channelIndex], {msg, filter, topic, props}, false);
         }
       } else {
         this.msgCache.push({msg, filter, topic, props});
       }
     } else { // first alive
       if (channels.length > 0) {
-        try {
-          channels[0].publish(msg, topic, props);
-        } catch (e) {
-          
-          this.emit('error', e)
-          this.msgCache.push({msg, filter, topic, props});
-        }
+        this.#publishOn(channels[0], {msg, filter, topic, props}, true);
       } else {
         this.msgCache.push({msg, filter, topic, props});
       }
+    }
+  }
+
+  // A failed publish is cached and retried by start(). A RangeError is amqplib refusing the
+  // message itself (since 2.3.1, a headers or arguments table over 64 KiB): every retry would
+  // fail the same way, so it is reported and not cached.
+  #publishOn(channel, entry, reportError) {
+    try {
+      channel.publish(entry.msg, entry.topic, entry.props);
+    } catch (e) {
+      const refused = e instanceof RangeError;
+      if (reportError || refused) this.emit('error', e);
+      if (!refused) this.msgCache.push(entry);
     }
   }
 
@@ -293,7 +278,6 @@ class AMQPPool extends EventEmitter {
     let connection = new Connection(url, connectionConfig);
     connection.on('close', () => {
       this.emit('close', connection.safeUrl)
-      connection?.metrics?.metric(METRICS_NAMES.reconnectedConnectionsCount)?.inc()
     });
     connection.on('error', (error) => {
       

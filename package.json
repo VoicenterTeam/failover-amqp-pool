@@ -1,6 +1,6 @@
 {
   "name": "@voicenter-team/failover-amqp-pool",
-  "version": "3.0.1",
+  "version": "4.0.0",
   "description": "amqp pool client",
   "main": "index.js",
   "files": [
@@ -9,10 +9,10 @@
     "Channel.js",
     "Connection.js",
     "WinstonAMQPPoolTransport.js",
-    "metrics/"
+    "telemetry/"
   ],
   "scripts": {
-    "test": "node --test --test-timeout=10000"
+    "test": "node --test --test-timeout=10000 test/*.test.js"
   },
   "repository": {
     "type": "git",
@@ -25,12 +25,24 @@
   ],
   "author": "Maksym Kyrylov",
   "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
   "homepage": "https://github.com/VoicenterTeam/failover-amqp-pool",
   "dependencies": {
-    "@pm2/io": "6.1.0",
-    "amqplib": "^0.10.9",
+    "amqplib": "^2.3.1",
     "nanoid": "^5.1.6",
     "object-hash": "^3.0.0",
     "uuid": "11.1.1"
+  },
+  "peerDependencies": {
+    "@opentelemetry/api": "^1.9.0"
+  },
+  "devDependencies": {
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/context-async-hooks": "2.12.0",
+    "@opentelemetry/core": "2.12.0",
+    "@opentelemetry/sdk-metrics": "2.12.0",
+    "@opentelemetry/sdk-trace": "2.12.0"
   }
 }
