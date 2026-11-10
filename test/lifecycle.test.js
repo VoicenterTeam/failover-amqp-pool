@@ -12,17 +12,24 @@ const { FakeAmqpChannel } = require('./helpers/fakes');
 const flush = () => new Promise(setImmediate);
 const INTERVAL = 10;
 
-// An amqplib connection that closes the way the real one does: 'close' arrives after close().
+// An amqplib connection that closes the way the real one does: 'close' arrives after close(),
+// and close() on a closed connection rejects (amqplib 2.3.1 toClosed(): IllegalOperationError).
 function fakeAmqpConnection() {
   const c = new EventEmitter();
   c.closeCalls = 0;
   c.channelCalls = 0;
   c.amqpChannels = [];
   c.deferClose = false;
+  c.rejectClose = false;
+  c.closed = false;
   c.beforeClose = () => {};
   c.finishClose = () => c.emit('close');
+  c.on('close', () => { c.closed = true; });
   c.close = () => {
     c.closeCalls++;
+    if (c.closed || c.rejectClose) {
+      return Promise.reject(new Error('Connection closed (by server)'));
+    }
     c.beforeClose();
     if (!c.deferClose) Promise.resolve().then(c.finishClose);
     return Promise.resolve();
@@ -316,4 +323,54 @@ test('a reconnect pending after a close is dropped if reconnectOnClose is cleare
   connection.reconnectOnClose = false;
   await tick(t, INTERVAL);
   assert.strictEqual(amqplib.connect.mock.callCount(), 1);
+});
+
+// ---- A close() that rejects, as amqplib's does on a connection that is already closed ----
+
+function trackRejections(t) {
+  const seen = [];
+  const onRejection = e => seen.push(e.message);
+  process.on('unhandledRejection', onRejection);
+  t.after(() => process.off('unhandledRejection', onRejection));
+  return seen;
+}
+
+test('stop() after a broker-side close resolves, rejects nothing, no reconnect', async t => {
+  const rejections = trackRejections(t);
+  const opened = mockBroker(t);
+  const pool = makePool(t, ['up.example']);
+  await flush();
+  opened[0].emit('close');
+  await pool.stop();
+  for (let i = 0; i < 3; i++) await flush();
+  assert.deepStrictEqual(rejections, []);
+  await tick(t, 3 * INTERVAL);
+  assert.strictEqual(amqplib.connect.mock.callCount(), 1);
+});
+
+test('stop() resolves for a live connection whose close() rejects', async t => {
+  const rejections = trackRejections(t);
+  const opened = mockBroker(t);
+  const pool = makePool(t, ['up.example']);
+  await flush();
+  opened[0].rejectClose = true;
+  let stopped = false;
+  const stopping = pool.stop().then(() => { stopped = true; });
+  for (let i = 0; i < 3; i++) await flush();
+  assert.strictEqual(stopped, true, 'stop() is still waiting for a close that never comes');
+  await stopping;
+  assert.deepStrictEqual(rejections, []);
+  assert.strictEqual(pool.connections.length, 0);
+});
+
+// ---- start() after disconnect() ----
+
+test('start() after disconnect() does not connect', async t => {
+  t.mock.method(amqplib, 'connect', () => Promise.resolve(fakeAmqpConnection()));
+  const connection = standalone(t);
+  connection.disconnect();
+  connection.start();
+  await flush();
+  assert.strictEqual(amqplib.connect.mock.callCount(), 0);
+  assert.strictEqual(connection.alive, false);
 });

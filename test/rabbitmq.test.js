@@ -236,8 +236,6 @@ test('connect, publish, close, reconnect and a refused login emit no credentials
   const good = make(pass), bad = make(wrongPass);
   record(good); record(bad);
   t.after(async () => {
-    // stop() does not end a never-connected connection's reconnect loop (separate issue), so end it here
-    bad.connections.forEach(c => { c.start = () => {}; });
     for (const p of [good, bad]) { const s = p.stop(); p.on('error', () => {}); await s.catch(() => {}); }
   });
   const count = (name, msg) => events.filter(([n, [a]]) => n === name && (!msg || a?.message === msg)).length;
@@ -290,8 +288,6 @@ async function credentialPool(t, username, password) {
   pool.emit = (name, ...args) => { events.push([name, args]); return emit(name, ...args); };
   pool.on('error', () => {});
   t.after(async () => {
-    // stop() does not end a never-connected connection's reconnect loop (separate issue)
-    pool.connections.forEach(c => { c.start = () => {}; });
     const s = pool.stop(); pool.on('error', () => {}); await s.catch(() => {});
   });
   const text = () => events.map(([n, args]) => n + ' ' + args.map(a => {
@@ -346,7 +342,6 @@ test('issue #9: vhosts with URL syntax characters, and the default vhost, connec
       }]);
       pool.on('error', () => {});
       t2.after(async () => {
-        pool.connections.forEach(c => { c.start = () => {}; });   // see credentialPool
         const s = pool.stop(); pool.on('error', () => {}); await s.catch(() => {});
       });
       let ready = false;
