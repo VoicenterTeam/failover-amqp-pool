@@ -84,8 +84,9 @@ class Channel extends EventEmitter {
     if(this?.queue?.options?.messageTtl === 'none') messageTtl = undefined
     if(Number.isInteger(this?.queue?.options?.messageTtl)) messageTtl = this?.queue?.options?.messageTtl
 
-    // A queue the channel names for itself would outlive its consumer: it expires after 30 minutes
-    // unused unless queue.options.expires says otherwise ('none' keeps it). Named queues are as set.
+    // A queue the channel names for itself would outlive its consumer: it expires after 30
+    // minutes unused unless queue.options.expires says otherwise ('none' keeps it). Named
+    // queues are as set.
     let expires = this?.queue?.options?.expires;
     if(this.#temporaryQueue){
       if(expires === undefined) expires = DYNAMIC_QUEUE_EXPIRES;
@@ -414,12 +415,15 @@ class Channel extends EventEmitter {
     return this._cacheAck.length > 0;
   }
 
-  // options: amqplib's sendToQueue options (headers, persistent, ...), passed on as given. They are
-  // copied before the trace context joins their headers, so the caller's object is not changed.
+  // options: amqplib's sendToQueue options (headers, persistent, ...), passed on as given. They
+  // are copied before the trace context joins their headers, so the caller's object is not changed.
   sendToQueue(queue, msg, options) {
     if (!this.alive) {
       countSent(this.connection.url, undefined, 'channel_dead');
-      this.emit('error', {message: 'channel is dead!', channelId: this._id, queue: this.queue?.name, exchange: this.exchange?.name})
+      this.emit('error', {
+        message: 'channel is dead!', channelId: this._id,
+        queue: this.queue?.name, exchange: this.exchange?.name,
+      })
       throw new Error('Channel is dead!')
     }
     if(msg instanceof Object){

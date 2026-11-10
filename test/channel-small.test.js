@@ -115,7 +115,7 @@ test('#27 sendToQueue passes its options to amqplib as the third argument', asyn
   assert.deepStrictEqual(fake().sent[0].rest, [{ persistent: true, headers: { h: 1 } }]);
 });
 
-test('#27 sendToQueue on a dead channel emits, counts channel_dead and throws like publish', async t => {
+test('#27 a dead channel: error event, channel_dead count, Error thrown', async t => {
   const { channel, connection, errors, fake } = await ready(named(), { strict: true });
   const { points } = startMetrics(t);
   fake().emit('close');
@@ -134,7 +134,7 @@ test('#27 sendToQueue on a dead channel emits, counts channel_dead and throws li
     [['amq.default', 1]]);
 });
 
-test('#27 under an SDK the options carry a traceparent; the caller\'s object is unchanged', async () => {
+test('#27 under an SDK options carry a traceparent, the caller object stays', async () => {
   const { spans } = startTracing();
   const { channel, fake } = await ready(named(), { strict: true });
   const options = { persistent: true, headers: { h: 1 } };
