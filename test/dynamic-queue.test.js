@@ -81,3 +81,50 @@ test('named queue (green before and after): one consume with its consumerTag', a
   assert.strictEqual(consumed[0].q, 'q');
   assert.ok(consumed[0].tag);
 });
+
+// Live broker: a channel with an exchange and binding but no queue name gets a message.
+const URL_ = process.env.FAMQP_TEST_URL;
+test('live: dynamic queue consumes a message published to its exchange',
+  { skip: URL_ ? false : 'FAMQP_TEST_URL not set' }, async t => {
+  const amqplib = require('amqplib');
+  const AMQPPool = require('..');
+  const u = new URL(URL_);
+  const exchange = `famqp-dynq-${process.pid}-${Date.now()}`;
+  const admin = await amqplib.connect(URL_);
+  const adminCh = await admin.createChannel();
+  await adminCh.assertExchange(exchange, 'fanout', { durable: false, autoDelete: true });
+  const pool = new AMQPPool([{
+    connection: { host: u.hostname, port: Number(u.port), username: decodeURIComponent(u.username),
+      password: decodeURIComponent(u.password), ssl: false, reconnectInterval: 50 },
+    channel: { prefetch: 5, exchange: { name: exchange, type: 'fanout' },
+      binding: { enabled: true }, queueOptions: { durable: false, autoDelete: false } },
+  }]);
+  let channel;
+  let dynamicName;
+  // the queue exists before consume() asks for it: a first-time create makes checkQueue's 404
+  // close the channel, which is a separate defect
+  const got = new Promise(resolve => pool.on('ready', async ch => {
+    channel = ch;
+    dynamicName = `${ch._id}:${os.hostname}`;
+    await adminCh.assertQueue(dynamicName, { durable: false, autoDelete: false });
+    ch.on('message', m => { ch.ack(m); resolve(m.content.toString()); });
+    ch.consume();
+  }));
+  pool.on('error', () => {});
+  t.after(async () => {
+    const stopped = pool.stop();
+    pool.on('error', () => {});
+    await stopped.catch(() => {});
+    if (dynamicName) await adminCh.deleteQueue(dynamicName).catch(() => {});
+    await adminCh.deleteExchange(exchange).catch(() => {});
+    await admin.close().catch(() => {});
+  });
+  const deadline = Date.now() + 5000;
+  let body;
+  // the bind finishes after 'ready'; publish until the consumer has the queue
+  while (!body && Date.now() < deadline) {
+    adminCh.publish(exchange, '', Buffer.from('hello'));
+    body = await Promise.race([got, new Promise(r => setTimeout(() => r(null), 100))]);
+  }
+  assert.strictEqual(body, 'hello');
+});
