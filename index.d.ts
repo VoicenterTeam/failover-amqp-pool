@@ -32,7 +32,8 @@ declare class AMQPPool extends EventEmitter {
      * `filter`: 'rr' round-robins over the alive channels, 'all' publishes on each, a function
      * picks channels from the alive ones (nothing returned: the message is cached), and
      * omitted, or any other string, publishes on the first alive channel. Without an alive
-     * channel the message is cached. A publish that fails on a channel is cached too, and an 'error' is emitted.
+     * channel the message is cached. A publish that fails on a channel is cached too, and an
+     * 'error' is emitted.
      */
     publish(
         msg: string | object,
