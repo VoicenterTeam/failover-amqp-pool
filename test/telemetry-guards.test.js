@@ -3,10 +3,10 @@
 // global tracer provider and context manager are set once per process.
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { EventEmitter } = require('node:events');
 const api = require('@opentelemetry/api');
 const { AsyncLocalStorageContextManager } = require('@opentelemetry/context-async-hooks');
 const Channel = require('../Channel');
+const { FakeAmqpChannel } = require('./helpers/fakes');
 
 const boom = () => { throw new Error('telemetry broke'); };
 
@@ -28,17 +28,6 @@ api.propagation.setGlobalPropagator({
   extract: ctx => (propagatorBroken ? boom() : ctx),
   fields: () => [],
 });
-
-class FakeAmqpChannel extends EventEmitter {
-  constructor() { super(); this.published = []; this.consumers = []; }
-  prefetch() { return Promise.resolve(); }
-  checkExchange() { return Promise.resolve(); }
-  checkQueue(queue) { return Promise.resolve({ queue }); }
-  consume(queue, cb, opts) { this.consumers.push(cb); return Promise.resolve({ consumerTag: opts.consumerTag }); }
-  publish(...args) { this.published.push(args); return true; }
-  ack() {}
-  deliver(body) { const m = { content: Buffer.from(body), fields: { deliveryTag: 1 }, properties: {} }; this.consumers.forEach(cb => cb(m)); }
-}
 
 async function readyChannel() {
   let fake;

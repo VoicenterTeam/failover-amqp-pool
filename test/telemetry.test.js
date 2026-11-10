@@ -13,36 +13,11 @@ const Connection = require('../Connection');
 const AMQPPool = require('..');
 const { CATALOGUE, SCOPE } = require('../telemetry/catalogue');
 const { startTracing, startMetrics } = require('./helpers/otel');
+const { FakeAmqpChannel } = require('./helpers/fakes');
 
 const URL_ = 'amqp://user:secret@rabbit.example:5673';
 const SERVER = { 'server.address': 'rabbit.example', 'server.port': 5673 };
 const RABBIT = { 'messaging.system': 'rabbitmq' };
-
-class FakeAmqpChannel extends EventEmitter {
-  constructor() {
-    super();
-    this.published = [];
-    this.consumers = [];
-    this.tag = 0;
-  }
-  prefetch() { return Promise.resolve(); }
-  checkExchange() { return Promise.resolve(); }
-  checkQueue(queue) { return Promise.resolve({ queue }); }
-  consume(queue, cb, opts) { this.consumers.push(cb); return Promise.resolve({ consumerTag: opts.consumerTag }); }
-  publish(exchange, routingKey, content, options) {
-    if (this.publishError) throw this.publishError;
-    this.published.push({ exchange, routingKey, options });
-    return true;
-  }
-  ack() {}
-  nack() {}
-  close() { this.emit('close'); }
-  deliver(body, headers) {
-    const m = { content: Buffer.from(body), fields: { deliveryTag: ++this.tag }, properties: { headers } };
-    this.consumers.forEach(cb => cb(m));
-    return m;
-  }
-}
 
 // A channel on a fake connection, created and ready.
 async function readyChannel(config = { exchange: { name: 'events' }, queue: { name: 'q' }, prefetch: 1 }) {
@@ -192,13 +167,11 @@ test('a disconnected connection schedules no reconnect and counts none', async t
   assert.deepStrictEqual(await points('amqp_pool.connection.reconnects'), []);
 });
 
-test('pool counts: connections and channels by state, cached messages; reading them re-creates nothing', async t => {
+test('pool counts: connections and channels by state, and cached messages', async t => {
   offline(t);
   const { points } = startMetrics(t);
   const pool = new AMQPPool([{ connection: { host: 'rabbit.example', port: 5673 }, channels: [{ queue: { name: 'a' } }, { queue: { name: 'b' } }] }]);
-  const events = [];
-  pool.on('error', e => events.push(e));
-  pool.on('info', i => events.push(i));
+  pool.on('error', () => {});
   pool.publish({ a: 1 });
   pool.publish({ a: 2 });
   const server = { ...RABBIT, ...SERVER };
@@ -207,11 +180,27 @@ test('pool counts: connections and channels by state, cached messages; reading t
   assert.deepStrictEqual(values(await points('amqp_pool.channel.count')), [
     [{ ...server, 'amqp_pool.state': 'alive' }, 0], [{ ...server, 'amqp_pool.state': 'down' }, 2]]);
   assert.deepStrictEqual(values(await points('amqp_pool.message.cached')), [[RABBIT, 2]]);
-  assert.deepStrictEqual(events, [], 'a collection starts no channel create');
   await pool.stop();
   // the SDK repeats an async instrument's last value; a read after stop() would give 3
   pool.msgCache.push({});
   assert.deepStrictEqual(values(await points('amqp_pool.message.cached')), [[RABBIT, 2]], 'a stopped pool is read no more');
+});
+
+// Reading `channel.alive` on a dead channel of a live connection starts a create; the counts
+// read `isAlive` instead. The connection is up and createConfirmChannel counts its calls.
+test('collecting pool counts re-creates no dead channel of a live connection', async t => {
+  offline(t);
+  const { points } = startMetrics(t);
+  const pool = new AMQPPool([{ connection: { host: 'rabbit.example', port: 5673 }, channels: [{ queue: { name: 'a' } }, { queue: { name: 'b' } }] }]);
+  pool.on('error', () => {});
+  let creates = 0;
+  const connection = pool.connections[0];
+  connection.amqpConnection = { createConfirmChannel: () => { creates++; return new Promise(() => {}); } };
+  connection.alive = true;
+  const down = { ...RABBIT, ...SERVER, 'amqp_pool.state': 'down' };
+  assert.deepStrictEqual(values(await points('amqp_pool.channel.count')).filter(([a]) => a['amqp_pool.state'] === 'down'), [[down, 2]]);
+  assert.strictEqual(creates, 0, 'a collection started no create');
+  pool.stop().catch(() => {});
 });
 
 test('a publish is a PRODUCER span whose context rides in a copy of the headers', async () => {
