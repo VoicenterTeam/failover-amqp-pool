@@ -96,7 +96,7 @@ test('all: a RangeError is reported once and not cached', t => {
   assert.strictEqual(errors.length, 1);
 });
 
-test('all: no alive channel caches the whole entry once; a later retry reaches every channel', t => {
+test('all: no alive channel: whole entry cached once, later retry reaches every channel', t => {
   const [A, B] = [fake('A'), fake('B')];
   const { pool } = offlinePool(t, []);
   pool.publish({ n: 1 }, 'all', 'tp', { p: 1 });

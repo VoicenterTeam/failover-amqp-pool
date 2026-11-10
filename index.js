@@ -145,7 +145,8 @@ class AMQPPool extends EventEmitter {
       else {
         if (filteredChannels instanceof Channel) filteredChannels = [filteredChannels];
         for (let channelIndex in filteredChannels) {
-          this.#publishOn(filteredChannels[channelIndex], {msg, filter, topic, props}, true);
+          this.#publishOn(filteredChannels[channelIndex], {msg, filter, topic, props},
+            !filter.isAllRetry);
         }
       }
     } else if (filter === 'rr') {
@@ -160,7 +161,8 @@ class AMQPPool extends EventEmitter {
     } else if (filter === 'all') {
       if (channels.length > 0) {
         for (let channelIndex in channels) {
-          this.#publishOn(channels[channelIndex], {msg, filter, topic, props}, false);
+          const channel = channels[channelIndex];
+          this.#publishOn(channel, {msg, filter: this.#onlyChannel(channel), topic, props}, false);
         }
       } else {
         this.msgCache.push({msg, filter, topic, props});
@@ -172,6 +174,15 @@ class AMQPPool extends EventEmitter {
         this.msgCache.push({msg, filter, topic, props});
       }
     }
+  }
+
+  // The filter a failed 'all' publish is cached with: the Channel object itself (an _id changes
+  // on every re-create), while it is alive, and a falsy value otherwise, which publish() caches
+  // again. Never [], which is truthy and would drop the message.
+  #onlyChannel(channel) {
+    const filter = alive => (alive.includes(channel) ? [channel] : null);
+    filter.isAllRetry = true;
+    return filter;
   }
 
   // A failed publish is cached and retried by start(). A RangeError is amqplib refusing the
