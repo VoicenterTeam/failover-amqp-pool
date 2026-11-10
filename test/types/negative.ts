@@ -1,18 +1,16 @@
-// Every line below must be a type error: an unused @ts-expect-error fails the compile.
+// Every statement tagged `// TSnnnn` must raise exactly that error on its line, and no other
+// line, or other error, may appear. test/types.test.js compiles this file as it is and compares.
 import AMQPPool = require('../..');
 
 declare const pool: AMQPPool;
 declare const channel: AMQPPool.Channel;
 
-// @ts-expect-error stop() takes no callback
-pool.stop(() => {});
-// @ts-expect-error sendToQueue takes three arguments at most
-channel.sendToQueue('q', 'hi', {}, 'extra');
-// @ts-expect-error the queue is a name, not a queue config
-channel.sendToQueue({ name: 'q' }, 'hi');
-// @ts-expect-error a 'ready' listener gets a Channel
-pool.on('ready', (channel: number) => {});
-// @ts-expect-error expires is a number or 'none'
-const bad: AMQPPool.OptionsConf = { expires: 'never' };
-// @ts-expect-error stop() resolves with numbers, not a boolean
-const flag: Promise<boolean> = pool.stop();
+pool.stop(() => {}); // TS2554 stop() takes no callback
+channel.sendToQueue('q', 'hi', {}, 'extra'); // TS2554 three arguments at most
+channel.sendToQueue({ name: 'q' }, 'hi'); // TS2345 the queue is a name
+pool.on('ready', (channel: number) => {}); // TS2769 a 'ready' listener gets a Channel
+const bad: AMQPPool.OptionsConf = { expires: 'never' }; // TS2322 number or 'none'
+const flag: Promise<boolean> = pool.stop(); // TS2322 numbers, not a boolean
+const asMethod: () => unknown = channel.isConsumable; // TS2322 a getter, not a method
+const ids: number[] = pool.addConnection([]); // TS2322 channel ids are strings
+const at: number | false = pool.getConnectionIndexByUrl('u'); // TS2322 the index is a string

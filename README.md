@@ -99,10 +99,15 @@ const config: AMQPPool.AmqpConfig[] = [{
   channel: { exchange: { name: 'my-exchange' } }   // `type` is optional
 }];
 
-const amqp = new AMQPPool(config);
-amqp.on('ready', (channel: AMQPPool.Channel) => channel.sendToQueue('my-queue', 'hello'));
-await amqp.stop();
+async function main(): Promise<void> {
+  const amqp = new AMQPPool(config);
+  amqp.on('ready', (channel: AMQPPool.Channel) => channel.sendToQueue('my-queue', 'hello'));
+  await amqp.stop();
+}
 ```
+
+The declarations import `events` and `amqplib` types: install `@types/node` in a TypeScript
+project (amqplib ships its own types).
 
 ## Basic Usage
 

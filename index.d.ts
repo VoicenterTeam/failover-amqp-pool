@@ -31,12 +31,12 @@ declare class AMQPPool extends EventEmitter {
     /**
      * `filter`: 'rr' round-robins over the alive channels, 'all' publishes on each, a function
      * picks channels from the alive ones (nothing returned: the message is cached), and
-     * omitted publishes on the first alive channel. Without an alive channel the message is
-     * cached. A publish that fails on a channel is cached too, and an 'error' is emitted.
+     * omitted, or any other string, publishes on the first alive channel. Without an alive
+     * channel the message is cached. A publish that fails on a channel is cached too, and an 'error' is emitted.
      */
     publish(
         msg: string | object,
-        filter?: 'rr' | 'all' | AMQPPool.PublishFilter,
+        filter?: 'rr' | 'all' | (string & {}) | AMQPPool.PublishFilter,
         topic?: string,
         props?: AMQPPool.PublishOptions
     ): void;
@@ -92,7 +92,7 @@ declare class AMQPPool extends EventEmitter {
     /** Returns the new connection's index. */
     createConnection(
         url: string,
-        connnection: AMQPPool.ConnectionConf
+        connection: AMQPPool.ConnectionConf
     ): number;
     /** Returns the new channel's id. */
     createChannel(
@@ -176,7 +176,8 @@ declare namespace AMQPPool {
     }
 
     interface ChannelConf {
-        exchange: ExchangeConf
+        /** Left out: a channel on the default exchange (sendToQueue, consume by queue name). */
+        exchange?: ExchangeConf
         queue?: QueueConf,
         binding?: BindingConf,
         topic?: string,
@@ -193,14 +194,14 @@ declare namespace AMQPPool {
         channel?: ChannelConf,
         /** Several channels on this connection; used instead of `channel`. */
         channels?: Array<ChannelConf>,
-        /** Merged under `channel` */
-        defaultChannelSettings?: Partial<ChannelConf>
+        /** Merged under `channel` (Object.assign), so `channel` may hold only what differs. */
+        defaultChannelSettings?: ChannelConf
     }
 
     /** What `start()` retries. */
     interface CachedMessage {
         msg: string | object,
-        filter?: 'rr' | 'all' | PublishFilter,
+        filter?: 'rr' | 'all' | (string & {}) | PublishFilter,
         topic?: string,
         props?: PublishOptions
     }

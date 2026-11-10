@@ -28,7 +28,6 @@ function compile(files, extra = []) {
 const rows = [
   ['import = require, events, stop(), sendToQueue, no exchange type', ['usage-require.ts'], []],
   ['default import under esModuleInterop', ['usage-interop.ts'], ['--esModuleInterop']],
-  ['misuse is a type error (@ts-expect-error on each line)', ['negative.ts'], []],
 ];
 for (const [name, files, extra] of rows) {
   test(`types: ${name}`, { skip }, () => {
@@ -36,6 +35,35 @@ for (const [name, files, extra] of rows) {
     assert.strictEqual(status, 0, out);
   });
 }
+
+test('types: the README TypeScript snippet compiles', { skip }, () => {
+  const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+  const snippet = /```typescript\n([\s\S]*?)```/.exec(readme)[1];
+  const name = `readme-snippet-${process.pid}.ts`;
+  const file = path.join(__dirname, 'types', name);
+  fs.writeFileSync(file, snippet.split('@voicenter-team/failover-amqp-pool').join('../..'));
+  try {
+    const { status, out } = compile([name]);
+    assert.strictEqual(status, 0, out);
+  } finally {
+    fs.rmSync(file, { force: true });
+  }
+});
+
+test('types: each negative.ts misuse raises its tagged error only', { skip }, () => {
+  const negative = path.join(__dirname, 'types', 'negative.ts');
+  const lines = fs.readFileSync(negative, 'utf8').split('\n');
+  const expected = [];
+  lines.forEach((text, i) => {
+    const tag = /\/\/ (TS\d+)/.exec(text);
+    if (tag) expected.push(`${i + 1} ${tag[1]}`);
+  });
+  const { out } = compile(['negative.ts']);
+  const errors = out.matchAll(/negative\.ts\((\d+),\d+\): error (TS\d+)/g);
+  const got = [...errors].map(m => `${m[1]} ${m[2]}`);
+  assert.ok(expected.length >= 9);
+  assert.deepStrictEqual(got, expected, out);
+});
 
 test('types: package.json points types at a packed file', () => {
   const pkg = require('../package.json');
