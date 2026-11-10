@@ -271,6 +271,7 @@ async function mgmt(method, path, body) {
     body: body && JSON.stringify(body)
   });
   if (!res.ok && !(method === 'DELETE' && res.status === 404)) throw new Error(`${method} ${path}: ${res.status}`);
+  return method === 'GET' ? res.json() : undefined;
 }
 
 // a pool for one user that records every event; returns the recorded events and helpers
@@ -350,3 +351,41 @@ test('issue #9: vhosts with URL syntax characters, and the default vhost, connec
     });
   }
 });
+
+// issue #31: the broker closes the pool's own connection, then stop() resolves, raises no
+// unhandled rejection, and no connection with that name comes back. Only the connection whose
+// connection_name is this pool's unique name is ever deleted.
+const named = async name =>
+  (await mgmt('GET', 'connections')).filter(c => c.client_properties?.connection_name === name);
+
+test('issue #31: stop() after a broker-side close resolves, rejects nothing, reconnects nothing',
+  { skip: skipMgmt, timeout: 30000 }, async t => {
+    const rejections = [];
+    const onRejection = e => rejections.push(e);
+    process.on('unhandledRejection', onRejection);
+    t.after(() => process.off('unhandledRejection', onRejection));
+    const u = new URL(URL_);
+    const pool = new AMQPPool([{
+      connection: { host: u.hostname, port: Number(u.port), username: decodeURIComponent(u.username),
+        password: decodeURIComponent(u.password), ssl: false, reconnectInterval: 500,
+        connection_name: `famqp-i31-${process.pid}-${Date.now()}` },
+      channel: { exchange: { name: 'amq.direct' } }
+    }]);
+    pool.on('error', () => {});
+    const connection = pool.connections[0];
+    const name = connection.connection_name;
+    t.after(async () => { pool.on('error', () => {}); await pool.stop().catch(() => {}); });
+    let closed = false;
+    pool.on('close', () => { closed = true; });
+    await until(() => connection.alive);
+    let mine;
+    while (!(mine = (await named(name))[0])) await wait(20);  // the API lists it a moment later
+    await mgmt('DELETE', `connections/${encodeURIComponent(mine.name)}`);
+    await until(() => closed);
+    await pool.stop();
+    for (let polls = 0; polls < 40; polls++) {
+      assert.strictEqual((await named(name)).length, 0, 'no connection of that name came back');
+      await wait(20);
+    }
+    assert.deepStrictEqual(rejections, []);
+  });
