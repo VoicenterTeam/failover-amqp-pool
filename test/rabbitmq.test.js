@@ -353,39 +353,52 @@ test('issue #9: vhosts with URL syntax characters, and the default vhost, connec
 });
 
 // issue #31: the broker closes the pool's own connection, then stop() resolves, raises no
-// unhandled rejection, and no connection with that name comes back. Only the connection whose
-// connection_name is this pool's unique name is ever deleted.
+// unhandled rejection, and starts no new connect. Only the connection whose connection_name is
+// this pool's unique name is ever deleted; the management API is used for that and nothing else.
 const named = async name =>
   (await mgmt('GET', 'connections')).filter(c => c.client_properties?.connection_name === name);
 
-test('issue #31: stop() after a broker-side close resolves, rejects nothing, reconnects nothing',
+async function closeFromBroker(name) {
+  let mine;
+  while (!(mine = (await named(name))[0])) await wait(20);  // the API lists it a moment later
+  await mgmt('DELETE', `connections/${encodeURIComponent(mine.name)}`);
+}
+
+function namedPool(t) {
+  const u = new URL(URL_);
+  const pool = new AMQPPool([{
+    connection: { host: u.hostname, port: Number(u.port), username: decodeURIComponent(u.username),
+      password: decodeURIComponent(u.password), ssl: false, reconnectInterval: 300,
+      connection_name: `famqp-i31-${process.pid}-${Date.now()}` },
+    channel: { exchange: { name: 'amq.direct' } }
+  }]);
+  pool.on('error', () => {});
+  t.after(async () => { pool.on('error', () => {}); await pool.stop().catch(() => {}); });
+  return { pool, connection: pool.connections[0] };
+}
+
+function watchRejections(t) {
+  const rejections = [];
+  const on = e => rejections.push(e);
+  process.on('unhandledRejection', on);
+  t.after(() => process.off('unhandledRejection', on));
+  return rejections;
+}
+
+// A pinned count of polls, 600 ms, two reconnectIntervals: time for a reconnect to show.
+const pollThrough = async () => { for (let polls = 0; polls < 30; polls++) await wait(20); };
+
+test('issue #31: stop() after a broker-side close resolves, rejects nothing, connects nothing',
   { skip: skipMgmt, timeout: 30000 }, async t => {
-    const rejections = [];
-    const onRejection = e => rejections.push(e);
-    process.on('unhandledRejection', onRejection);
-    t.after(() => process.off('unhandledRejection', onRejection));
-    const u = new URL(URL_);
-    const pool = new AMQPPool([{
-      connection: { host: u.hostname, port: Number(u.port), username: decodeURIComponent(u.username),
-        password: decodeURIComponent(u.password), ssl: false, reconnectInterval: 500,
-        connection_name: `famqp-i31-${process.pid}-${Date.now()}` },
-      channel: { exchange: { name: 'amq.direct' } }
-    }]);
-    pool.on('error', () => {});
-    const connection = pool.connections[0];
-    const name = connection.connection_name;
-    t.after(async () => { pool.on('error', () => {}); await pool.stop().catch(() => {}); });
-    let closed = false;
-    pool.on('close', () => { closed = true; });
+    const rejections = watchRejections(t);
+    const { pool, connection } = namedPool(t);
+    const closed = new Promise(resolve => pool.once('close', resolve));
     await until(() => connection.alive);
-    let mine;
-    while (!(mine = (await named(name))[0])) await wait(20);  // the API lists it a moment later
-    await mgmt('DELETE', `connections/${encodeURIComponent(mine.name)}`);
-    await until(() => closed);
+    await closeFromBroker(connection.connection_name);
+    await closed;
+    t.mock.method(amqplib, 'connect');  // counts, and still connects
     await pool.stop();
-    for (let polls = 0; polls < 40; polls++) {
-      assert.strictEqual((await named(name)).length, 0, 'no connection of that name came back');
-      await wait(20);
-    }
-    assert.deepStrictEqual(rejections, []);
+    await pollThrough();
+    assert.strictEqual(amqplib.connect.mock.callCount(), 0, 'no connect after stop()');
+    assert.deepStrictEqual([connection.alive, connection.amqpConnection, rejections], [false, undefined, []]);
   });
