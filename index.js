@@ -35,8 +35,11 @@ function _buildUrl(config) {
   if (config.vhost) {
     url += '/' + encodeURIComponent(String(config.vhost).replace(/^\//, ''));
   }
-  if (config.hasOwnProperty('heartbeat')) {
-    url += '?heartbeat=' + config.heartbeat;
+  // amqplib 2 reads heartbeat=0 (after parseInt, so also '0.5' or 'abc') as "no heartbeats";
+  // before it meant "the server's value", which is what leaving it out gives now
+  const heartbeat = parseInt(config.heartbeat, 10);
+  if (heartbeat > 0) {
+    url += '?heartbeat=' + heartbeat;
   }
   return url;
 }
@@ -151,12 +154,7 @@ class AMQPPool extends EventEmitter {
       else {
         if (filteredChannels instanceof Channel) filteredChannels = [filteredChannels];
         for (let channelIndex in filteredChannels) {
-          try {
-            filteredChannels[channelIndex].publish(msg, topic, props);
-          } catch (e) {
-            this.emit('error', e)
-            this.msgCache.push({msg, filter, topic, props});
-          }
+          this.#publishOn(filteredChannels[channelIndex], {msg, filter, topic, props}, true);
         }
       }
     } else if (filter === 'rr') {
@@ -164,38 +162,37 @@ class AMQPPool extends EventEmitter {
         if(this.rr_i >= channels.length) {
           this.rr_i = 0;
         }
-        try {
-          channels[this.rr_i++].publish(msg, topic, props);
-        } catch (e) {
-          this.msgCache.push({msg, filter, topic, props});
-        }
+        this.#publishOn(channels[this.rr_i++], {msg, filter, topic, props}, false);
       } else {
         this.msgCache.push({msg, filter, topic, props});
       }
     } else if (filter === 'all') {
       if (channels.length > 0) {
         for (let channelIndex in channels) {
-          try {
-            channels[channelIndex].publish(msg, topic, props);
-          } catch (e) {
-            this.msgCache.push({msg, filter, topic, props});
-          }
+          this.#publishOn(channels[channelIndex], {msg, filter, topic, props}, false);
         }
       } else {
         this.msgCache.push({msg, filter, topic, props});
       }
     } else { // first alive
       if (channels.length > 0) {
-        try {
-          channels[0].publish(msg, topic, props);
-        } catch (e) {
-          
-          this.emit('error', e)
-          this.msgCache.push({msg, filter, topic, props});
-        }
+        this.#publishOn(channels[0], {msg, filter, topic, props}, true);
       } else {
         this.msgCache.push({msg, filter, topic, props});
       }
+    }
+  }
+
+  // A failed publish is cached and retried by start(). A RangeError is amqplib refusing the
+  // message itself (since 2.3.1, a headers or arguments table over 64 KiB): every retry would
+  // fail the same way, so it is reported and not cached.
+  #publishOn(channel, entry, reportError) {
+    try {
+      channel.publish(entry.msg, entry.topic, entry.props);
+    } catch (e) {
+      const refused = e instanceof RangeError;
+      if (reportError || refused) this.emit('error', e);
+      if (!refused) this.msgCache.push(entry);
     }
   }
 

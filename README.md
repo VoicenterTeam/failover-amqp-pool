@@ -255,7 +255,7 @@ amqp.publish(message, 'all', routingKey, {
     username: 'guest',           // Username
     password: 'guest',           // Password (URL-encoded for you; ASCII only, see below)
     vhost: '/',                  // Virtual host
-    heartbeat: 25,              // Heartbeat interval in seconds
+    heartbeat: 25,              // Heartbeat interval in seconds; 0 or unset takes the server's value
     timeout: 5000,              // Connection timeout
     reconnectInterval: 1500,    // Reconnection interval on failure, and the first channel create retry wait
     channelRetryMaxInterval: 30000 // Ceiling for the doubling channel create retry wait
