@@ -361,3 +361,42 @@ test('waitConfirmed() refuses an ms that is not a whole number from 0 to 2147483
         { name: 'TypeError', message: /^waitConfirmed: ms must be/ }, row);
     }
   });
+
+// ---- re-review of PR #100: an own close the connection fails under, the failed-create mark
+
+test('an own close() the connection fails under hands its messages back, reason closed',
+  async () => {
+    const { channel, connection, handed } = await ready();
+    channel.publish({ n: 1 }, 'rk', { messageId: 'm-1' });
+    const closing = channel.close();
+    connection.alive = false;   // the connection failed before the broker answered the close
+    await closing;
+    await tick();
+    await tick();
+    assert.deepStrictEqual(handed.flat().map(e => [e.props.messageId, e.reason]),
+      [['m-1', 'closed']]);
+  });
+
+test('a create that fails with its channel open: the close it makes hands nothing back',
+  async () => {
+    const { channel, connection, handed, fake } = await ready({ exchange: { name: 'events' },
+      queue: { name: 'work' }, topic: 'rk' });
+    channel.consume();
+    await tick();
+    const cancelled = fake();
+    // amqplib's close() answers later: the new amqplib channel is in place before it does
+    cancelled.close = () => { setImmediate(() => cancelled.emit('close')); };
+    let refuse = null;
+    const make = connection.amqpConnection.createConfirmChannel;
+    connection.amqpConnection.createConfirmChannel = () => make().then(c => {
+      c.checkExchange = () => new Promise((_, no) => { refuse = no; });
+      return c;
+    });
+    cancelled.consumers.forEach(cb => cb(null));
+    for (let i = 0; i < 20 && !refuse; i++) await tick();
+    channel.publish({ n: 1 }, 'rk', { messageId: 'during-create' });
+    refuse(new Error('refused, channel left open'));
+    for (let i = 0; i < 20; i++) await tick();
+    channel.close();
+    assert.deepStrictEqual([fake().published.length, handed], [1, []]);
+  });

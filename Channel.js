@@ -370,11 +370,15 @@ class Channel extends EventEmitter {
       pending.clear();
       this.#held.delete(pending);
       this.#settleWaiters();
-      // a close this Channel asked for: the broker has every message published before it, and
-      // amqplib drops the acks that arrive while its channel is closing
-      if (this.#closedByChannel.has(amqpChannel)) return;
-      this.#handBack(entries, 'closed',
-        failure && { code: failure.code, message: failure.message });
+      const cause = failure && { code: failure.code, message: failure.message };
+      if (!this.#closedByChannel.has(amqpChannel)) return this.#handBack(entries, 'closed', cause);
+      // A close this Channel asked for. Answered over a live connection, the broker has every
+      // message published before it, and amqplib dropped the acks that came while the channel
+      // closed: nothing comes back. A connection that failed first closed the channel instead,
+      // and marks itself down in the same turn: decided on the next tick, those come back.
+      process.nextTick(() => {
+        if (!this.connection.alive) this.#handBack(entries, 'closed', cause);
+      });
     });
   }
   // The confirm callback amqplib gets with the message: an ack forgets it, a nack hands it

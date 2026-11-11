@@ -152,3 +152,31 @@ test('live: waitConfirmed() resolves [] once the broker has confirmed every mess
     assert.deepStrictEqual({ left: left.length, queued: queued.length },
       { left: 0, queued: BEFORE * BATCH });
   });
+
+// The reviewer's probe on PR #100: the Channel's own close() crosses a broker-side connection
+// close. The client has not yet read the broker's Connection.Close when it publishes and then
+// calls close(). Each accepted message must be queued or handed back.
+test('live: an own close() racing a broker connection close loses nothing',
+  { skip: skipLive, timeout: 60000 }, async t => {
+    const { name, conn, channel } = await liveChannel(t, 'race');
+    const back = new Set();
+    channel.on('unconfirmed', es => es.forEach(e => back.add(e.props.messageId)));
+    const broker = await connectionNamed(`${name}_${os.hostname}`);
+    const stream = conn.amqpConnection.connection.stream;
+    const readers = stream.listeners('readable');
+    stream.removeAllListeners('readable');   // the client reads nothing until resumed
+    await closeConnection(broker);
+    const accepted = [];
+    for (let i = 0; i < BEFORE * BATCH / 2; i++) {
+      channel.publish({ i }, 'k', { messageId: `r${i}` });
+      accepted.push(`r${i}`);
+    }
+    channel.close();
+    for (const r of readers) { stream.on('readable', r); r(); }
+    await until(() => !conn.alive, 'the connection to close');
+    await new Promise(setImmediate);
+    const inQueue = new Set(await drain(`${name}.q`));
+    const lost = accepted.filter(id => !inQueue.has(id) && !back.has(id));
+    assert.deepStrictEqual({ lost: lost.length, accepted: accepted.length }, { lost: 0,
+      accepted: BEFORE * BATCH / 2 });
+  });
