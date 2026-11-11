@@ -26,8 +26,8 @@ declare class AMQPPool extends EventEmitter {
      * teardown error is not heard. (A SIGINT stop gives those listeners its one 'info' or
      * 'error'.) Takes no callback. Resolves, once each connection is closed and removed, with
      * one entry per connection: its position when stop() began.
-     * A stopped pool is final: addConnection(), createConnection(), createChannel() and start()
-     * throw Error('Pool is stopped') after it.
+     * A stopped pool is final: addConnection(), createConnection(), createChannel(), start() and
+     * publish() throw Error('Pool is stopped') after it.
      */
     stop(): Promise<number[]>;
     /** Adds the connections and channels of a config array; returns the new channels' ids. */
@@ -39,6 +39,7 @@ declare class AMQPPool extends EventEmitter {
      * omitted, or any other string, publishes on the first alive channel. Without an alive
      * channel the message is cached. A publish that fails on a channel is cached too, and an
      * 'error' is emitted.
+     * Throws Error('Pool is stopped') after stop().
      */
     publish(
         msg: string | object,

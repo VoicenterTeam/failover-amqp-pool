@@ -609,8 +609,9 @@ discard. `stop()` also removes the pool's SIGINT listener, so a stopped pool can
 removes only the ones the pool added itself, on its connections and channels. A stopped pool
 emits nothing more: an error during teardown, or after `stop()`, is not heard by your `'error'`
 listener and does not throw.
-A stopped pool is final: `addConnection()`, `createConnection()`, `createChannel()` and
-`start()` throw `Error('Pool is stopped')` after `stop()`, and open nothing. Build a new pool instead.
+A stopped pool is final: `addConnection()`, `createConnection()`, `createChannel()`, `start()` and
+`publish()` throw `Error('Pool is stopped')` after `stop()`, and open, cache and send nothing.
+Build a new pool instead. The pool's own retry timer never calls `publish()` once stopped.
 
 On SIGINT the pool stops itself and logs one `'info'` event (`'Pool stopped on SIGINT'`), or an
 `'error'` event with the error if `stop()` rejects (also when it rejects with `null` or
