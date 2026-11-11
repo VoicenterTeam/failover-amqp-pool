@@ -1,6 +1,6 @@
 // Integration tests against a real RabbitMQ. Skipped unless FAMQP_TEST_URL is set, e.g.
 // FAMQP_TEST_URL=amqp://guest:guest@127.0.0.1:5672 npm test
-const { test } = require('node:test');
+const { test, after } = require('node:test');
 const assert = require('node:assert');
 const amqplib = require('amqplib');
 const AMQPPool = require('..');
@@ -161,8 +161,8 @@ test('issue #5: a create that fails on a locked queue stays dead and retries unt
   await adminCh.assertQueue(queue, { exclusive: true });   // 405 RESOURCE_LOCKED for any other connection
   const { pool, errors } = poolFor(t, { prefetch: 1, queue: { name: queue, options: { autoDelete: true, arguments: { 'x-expires': 600000 } } } });
   // The pool's retry declares this name after the admin deleted it, and its autoDelete never
-  // fires without a consumer. poolFor's hook stops the pool; this one, registered after it,
-  // deletes the queue on its own connection so it runs even when the test fails midway.
+  // fires without a consumer. poolFor's hook stops the pool; this one deletes the queue on its
+  // own connection, so it runs even when the test fails midway.
   t.after(async () => {
     const c = await amqplib.connect(URL_);
     try { await (await c.createChannel()).deleteQueue(queue); } finally { await c.close().catch(() => {}); }
@@ -275,7 +275,7 @@ async function mgmt(method, path, body) {
   const auth = Buffer.from(`${decodeURIComponent(m.username)}:${decodeURIComponent(m.password)}`).toString('base64');
   const res = await fetch(`${m.origin}/api/${path}`, {
     method, headers: { authorization: `Basic ${auth}`, 'content-type': 'application/json' },
-    body: body && JSON.stringify(body)
+    body: body && JSON.stringify(body), signal: AbortSignal.timeout(10000)
   });
   if (!res.ok && !(method === 'DELETE' && res.status === 404)) throw new Error(`${method} ${path}: ${res.status}`);
   return method === 'GET' ? res.json() : undefined;
@@ -409,3 +409,16 @@ test('issue #31: stop() after a broker-side close resolves, rejects nothing, con
     assert.strictEqual(amqplib.connect.mock.callCount(), 0, 'no connect after stop()');
     assert.deepStrictEqual([connection.alive, connection.amqpConnection, rejections], [false, undefined, []]);
   });
+
+// issue #49: nothing this process declared may outlive the file. Only with the management API.
+after(async () => {
+  if (!MGMT || !URL_) return;
+  const mine = `-${process.pid}-`;
+  const left = [];
+  for (const kind of ['queues', 'exchanges']) {
+    for (const x of (await mgmt('GET', `${kind}/%2F?columns=name&page=1&page_size=500`)).items) {
+      if (x.name.startsWith('famqp-') && x.name.includes(mine)) left.push(`${kind}:${x.name}`);
+    }
+  }
+  assert.deepStrictEqual(left, []);
+});
