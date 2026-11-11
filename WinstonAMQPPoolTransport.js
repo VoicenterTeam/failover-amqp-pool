@@ -43,7 +43,8 @@ class WinstonAMQPPoolTransport extends Transport {
         this.#warned = true;
         process.emitWarning('the pool is stopped: WinstonAMQPPoolTransport drops log lines',
             { code: 'POOL_STOPPED' });
-        this.emit('warn', e);
+        // on the next tick, so a 'warn' listener that throws cannot throw out of log()
+        process.nextTick(() => this.emit('warn', e));
     }
 }
 

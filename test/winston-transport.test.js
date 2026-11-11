@@ -113,3 +113,28 @@ test('a line JSON.stringify refuses: log() does not throw, calls back, console.e
   assert.strictEqual(callbacks, 1);
   assert.strictEqual(consoleError.mock.callCount(), 1);
 });
+
+// Swaps the runner's uncaughtException listeners for a capture, restored after the test
+function captureUncaught(t) {
+  const got = [];
+  const saved = process.listeners('uncaughtException');
+  process.removeAllListeners('uncaughtException');
+  const capture = e => got.push(e);
+  process.on('uncaughtException', capture);
+  t.after(() => {
+    process.off('uncaughtException', capture);
+    for (const listener of saved) process.on('uncaughtException', listener);
+  });
+  return got;
+}
+
+test('a throwing warn listener: log() does not throw, calls back once, the error surfaces',
+  async t => {
+    const { transport } = rig(t);
+    await transport.client.stop();
+    const bug = new Error('listener bug');
+    transport.on('warn', () => { throw bug; });
+    const uncaught = captureUncaught(t);
+    assert.strictEqual(await logLines(transport, 1), 1);
+    assert.deepStrictEqual(uncaught, [bug]);
+  });
