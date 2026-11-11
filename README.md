@@ -32,7 +32,8 @@ connection with `541 INTERNAL_ERROR`). Before, every queue defaulted to `durable
 
 - A named queue is declared `durable: true` unless `queue.options.durable` says otherwise.
 - A dynamic queue (no `queue.name`, the pool names it) is declared `exclusive: true` and
-  `durable: false`, with the 30 minute `x-expires` kept. `queue.options.durable` and
+  `durable: false` (`exclusive: false, durable: true` for a quorum or stream queue), with the
+  30 minute `x-expires` kept. `queue.options.durable` and
   `queue.options.exclusive` are honoured when set, on either kind.
 - `x-consumer-timeout: 7200000` is a default argument for quorum queues only
   (`arguments['x-queue-type'] === 'quorum'`), added when your `arguments` do not set it. A classic
@@ -51,16 +52,21 @@ Migrating:
   with `queue.options.durable: false` (3.13 only: 4.3 refuses it by default).
 - **An explicit `durable: false` on a named queue** is still honoured. On 4.3 it needs
   `exclusive: true`, or the broker closes the connection when the pool declares it.
-- **A dynamic queue goes with its connection.** After a reconnect the channel declares it again
-  under the same name, binds it (`binding.enabled` or not) and consumes, but it is empty: what was
-  queued or delivered and not acked on the old connection is lost, and what was published while
-  the pool was down had no queue to reach. Within one connection (a channel re-create) the queue
-  stays. If the broker still holds the old connection when the pool reconnects, the check of the
-  queue answers `405 RESOURCE_LOCKED`, the create fails with `'cant establish a channel'` and is
-  retried until the broker drops the old connection. Set `queue.options.exclusive: false` to
-  keep a dynamic queue across connections; on 4.3 it needs `durable: true` as well.
-- **A dynamic quorum or stream queue** cannot be exclusive or transient: set
-  `exclusive: false, durable: true` with its `x-queue-type`, or the broker refuses it with 406.
+- **A dynamic queue goes with its connection, and a reconnect loses messages.** After a
+  reconnect the channel declares it again under the same name, binds it (`binding.enabled` or
+  not) and consumes, but it is empty. Lost: messages that were delivered and not acked on the old
+  connection, messages that were ready in the queue, and anything published while the pool was
+  down, since no queue existed for it. (Before, the queue outlived the connection and the broker
+  redelivered the unacked ones.) Within one connection (a channel re-create) the queue stays. If
+  the broker still holds the old connection when the pool reconnects, the check of the queue
+  answers `405 RESOURCE_LOCKED`, the create fails with `'cant establish a channel'` and is retried
+  until the broker drops the old connection. Set `queue.options.exclusive: false` to keep a
+  dynamic queue across connections; on 4.3 it needs `durable: true` as well.
+- **A dynamic quorum or stream queue** cannot be exclusive or transient (the broker refuses it
+  with 406), so a dynamic queue whose `arguments` set `x-queue-type` to `'quorum'` or `'stream'`
+  defaults to `exclusive: false, durable: true`, as a named queue does. Like any queue it then
+  stays on the broker across connections until `expires` removes it. An explicit
+  `queue.options.exclusive` or `durable` still wins.
 
 ## Breaking changes in 4.0.0
 

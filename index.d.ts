@@ -113,9 +113,9 @@ declare namespace AMQPPool {
     // Here we just put all the things into one object and make all props non mandatory
     // So, one interface can work for various things
     interface OptionsConf {
-        /** Queue: default false, true for a queue the channel names itself (no queue name). */
+        /** Queue: default false; true for a queue the channel names itself (not quorum, stream) */
         exclusive?: boolean,
-        /** Queue: default true, false for a queue the channel names itself (no queue name). */
+        /** Queue: default true; false for a queue the channel names itself (not quorum, stream) */
         durable?: boolean,
         /**
          * Queue arguments, passed to the broker as given. A quorum queue

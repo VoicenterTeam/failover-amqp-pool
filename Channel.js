@@ -105,11 +105,14 @@ class Channel extends EventEmitter {
     }
 
     // A queue the channel names for itself belongs to its connection and is transient; a named
-    // queue is durable. What the caller sets in queue.options is kept.
+    // queue is durable. A quorum or stream queue is neither exclusive nor transient, so it is
+    // declared like a named one. What the caller sets in queue.options is kept.
     const given = this?.queue?.options;
+    const type = given?.arguments?.['x-queue-type'];
+    const connectionBound = this.#temporaryQueue && type !== 'quorum' && type !== 'stream';
     return {
-      exclusive: given?.exclusive ?? this.#temporaryQueue,
-      durable: given?.durable ?? !this.#temporaryQueue,
+      exclusive: given?.exclusive ?? connectionBound,
+      durable: given?.durable ?? !connectionBound,
       arguments: this.#queueArguments(given?.arguments),
       noAck: !this.prefetch,
       expires,

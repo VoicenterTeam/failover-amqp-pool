@@ -160,6 +160,29 @@ test('#54 the default goes into a copy: the caller arguments object is not chang
   assert.deepStrictEqual(given, { 'x-queue-type': 'quorum' });
 });
 
+test('#53 a dynamic quorum or stream queue defaults to durable and not exclusive', async () => {
+  for (const type of ['quorum', 'stream']) {
+    const options = await declaredDynamic({ arguments: { 'x-queue-type': type } });
+    assert.deepStrictEqual([type, options.exclusive, options.durable], [type, false, true]);
+  }
+});
+
+test('#53 a dynamic classic queue stays exclusive and transient', async () => {
+  const options = await declaredDynamic({ arguments: { 'x-queue-type': 'classic' } });
+  assert.deepStrictEqual([options.exclusive, options.durable], [true, false]);
+});
+
+test('#53 explicit exclusive and durable win on a dynamic quorum queue', async () => {
+  const options = await declaredDynamic({
+    exclusive: true, durable: false, arguments: { 'x-queue-type': 'quorum' } });
+  assert.deepStrictEqual([options.exclusive, options.durable], [true, false]);
+});
+
+test('#53 a named quorum queue is declared durable and not exclusive', async () => {
+  const options = await declaredNamed({ arguments: { 'x-queue-type': 'quorum' } });
+  assert.deepStrictEqual([options.exclusive, options.durable], [false, true]);
+});
+
 test('#54 a dynamic quorum queue gets the default too', async () => {
   const options = await declaredDynamic({ arguments: { 'x-queue-type': 'quorum' } });
   assert.strictEqual(options.arguments['x-consumer-timeout'], 7200000);
@@ -262,6 +285,30 @@ test('live: a quorum queue that does not exist is declared durable, x-consumer-t
   assert.strictEqual(info.type, 'quorum');
   assert.strictEqual(info.durable, true);
   assert.strictEqual(info.exclusive, false);
+  assert.strictEqual(info.arguments['x-consumer-timeout'], 7200000);
+});
+
+test('live: a dynamic quorum queue is declared from nothing, durable, and consumes',
+  { skip: skipLive }, async t => {
+  const conf = { prefetch: 5, queue: { options: { arguments: { 'x-queue-type': 'quorum' } } } };
+  const { pool, adminCh, exchange } = await livePool(t, conf);
+  const ch = await readyChannel(pool);
+  const bodies = [];
+  ch.on('message', m => { bodies.push(m.content.toString()); ch.ack(m); });
+  const done = consuming(ch);
+  ch.consume();
+  await done;
+  t.after(() => mgmt('DELETE', queuePath(ch.queue.name)));
+  for (let i = 0; i < 40 && !bodies.includes('hello'); i++) {
+    adminCh.publish(exchange, '', Buffer.from('hello'));
+    await new Promise(r => setTimeout(r, 100));
+  }
+  assert.ok(bodies.includes('hello'), 'the dynamic quorum queue delivered');
+  const info = await queueInfo(ch.queue.name);
+  assert.strictEqual(info.type, 'quorum');
+  assert.strictEqual(info.durable, true);
+  assert.strictEqual(info.exclusive, false);
+  assert.strictEqual(info.arguments['x-expires'], 1800000);
   assert.strictEqual(info.arguments['x-consumer-timeout'], 7200000);
 });
 
