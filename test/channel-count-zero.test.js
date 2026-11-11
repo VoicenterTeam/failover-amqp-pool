@@ -7,14 +7,18 @@ const { watchPool } = require('../telemetry/metrics');
 const { startMetrics } = require('./helpers/otel');
 const { offline } = require('./helpers/offline');
 
-const server = { 'messaging.system': 'rabbitmq', 'server.address': 'rabbit.example', 'server.port': 5673 };
+const server = {
+  'messaging.system': 'rabbitmq', 'server.address': 'rabbit.example', 'server.port': 5673
+};
 async function channelCount(points) {
   const out = { alive: 0, down: 0 };
-  for (const p of await points('amqp_pool.channel.count')) out[p.attributes['amqp_pool.state']] += p.value;
+  for (const p of await points('amqp_pool.channel.count')) {
+    out[p.attributes['amqp_pool.state']] += p.value;
+  }
   return out;
 }
 
-test('amqp_pool.channel.count reads 0 alive and 0 down once the last channel is removed', async t => {
+test('channel.count reads 0 alive and 0 down once the last channel is removed', async t => {
   offline(t);
   const { points } = startMetrics(t);
   const pool = new AMQPPool([{ connection: { host: 'rabbit.example', port: 5673 },
@@ -48,7 +52,7 @@ test('only the server that lost its channels reads 0, the other keeps its count'
   });
 });
 
-test('a reading with a connection and no channels observes 0 alive and 0 down for its server', async t => {
+test('a reading with a connection and no channels observes 0 alive, 0 down', async t => {
   const { points } = startMetrics(t);
   const url = 'amqp://rabbit.example:5673';
   let channels = [{ url, alive: true }];
@@ -58,5 +62,6 @@ test('a reading with a connection and no channels observes 0 alive and 0 down fo
   channels = [];
   const read = (await points('amqp_pool.channel.count')).map(p => [p.attributes, p.value]);
   assert.deepStrictEqual(read, [
-    [{ ...server, 'amqp_pool.state': 'alive' }, 0], [{ ...server, 'amqp_pool.state': 'down' }, 0]]);
+    [{ ...server, 'amqp_pool.state': 'alive' }, 0],
+    [{ ...server, 'amqp_pool.state': 'down' }, 0]]);
 });
