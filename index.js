@@ -170,15 +170,20 @@ class AMQPPool extends EventEmitter {
     const end = cache.length;
     let at = 0;
     while (at < end && !this.#stopped) {
-      const { keep, sent } = this.#attempt(cache[at++], pass, notes);
-      kept.push(...keep);
+      const tried = cache[at++];
+      const { keep, sent } = this.#attempt(tried, pass, notes);
+      for (const entry of keep) kept.push({ entry, added: entry !== tried });
       if (sent) break;
     }
-    // past `at`: the entries the pass did not reach, then any a listener cached during it
+    // past `at`: the entries the pass did not reach, then any a listener cached during it.
+    // Cached entries go back by index; one the pass made (an 'all' split) is added, in its place.
     const rest = cache.slice(at);
     cache.length = 0;
-    for (const entry of kept) cache.push(entry);
-    for (const entry of rest) cache.push(entry);
+    for (const { entry, added } of kept) {
+      if (added) this.#cache(entry);
+      else cache[cache.length] = entry;
+    }
+    for (const entry of rest) cache[cache.length] = entry;
     this.#notify(notes);
   }
   
@@ -363,7 +368,8 @@ class AMQPPool extends EventEmitter {
     };
   }
 
-  // The one way into the cache: every message kept for start()'s retry is added here
+  // The one way into the cache: every message kept for start()'s retry is added here, and only
+  // here does the pool push onto msgCache
   #cache(entry) {
     this.msgCache.push(entry);
   }
