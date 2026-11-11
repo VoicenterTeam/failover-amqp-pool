@@ -27,7 +27,7 @@ declare class AMQPPool extends EventEmitter {
      * 'error'.) Takes no callback. Resolves, once each connection is closed and removed, with
      * one entry per connection: its position when stop() began.
      * A stopped pool is final: addConnection(), createConnection(), createChannel(), start() and
-     * publish() throw Error('Pool is stopped') after it.
+     * publish() throw Error('Pool is stopped') after it, with `code` 'POOL_STOPPED'.
      */
     stop(): Promise<number[]>;
     /** Adds the connections and channels of a config array; returns the new channels' ids. */
@@ -42,7 +42,7 @@ declare class AMQPPool extends EventEmitter {
      * that channel is gone (removed, or closed with close() and still listed) it is dropped, a
      * closed one with an 'info' event
      * { message: 'cached message dropped', messageId, channelId, reason }.
-     * Throws Error('Pool is stopped') after stop().
+     * Throws Error('Pool is stopped'), with `code` 'POOL_STOPPED', after stop().
      */
     publish(
         msg: string | object,
