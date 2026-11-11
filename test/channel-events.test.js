@@ -269,9 +269,8 @@ test('#63 a create that fails twice emits one error per attempt', async () => {
     return c;
   });
   channel.create();
-  await settle();
-  await settle();
-  await settle();
+  // a pinned number of polls, the retry timer is 1 ms
+  for (let i = 0; i < 500 && failed(log) < 2; i++) await new Promise((r) => setTimeout(r, 2));
   assert.ok(failed(log) >= 2);
   assert.strictEqual(of('error').length, failed(log));
   channel.close();
