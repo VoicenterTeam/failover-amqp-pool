@@ -66,3 +66,13 @@ async function main(): Promise<void> {
     void stopped;
 }
 void main;
+
+// The stopped-pool error narrows by its code, with no cast
+type Refused = Error & { code: 'ECONNREFUSED' };
+function onThrow(e: AMQPPool.PoolStoppedError | Refused): void {
+    if (e.code === 'POOL_STOPPED') {
+        const stopped: AMQPPool.PoolStoppedError = e;
+        void stopped;
+    }
+}
+void onThrow;
