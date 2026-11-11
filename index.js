@@ -104,7 +104,7 @@ class AMQPPool extends EventEmitter {
   #wired = new WeakMap();
   #stopped = false;
 
-  // A stopped pool is final: it opens and creates nothing
+  // A stopped pool is final: it opens, creates and sends nothing
   #assertRunning() {
     if (this.#stopped) throw new Error('Pool is stopped');
   }
@@ -141,6 +141,8 @@ class AMQPPool extends EventEmitter {
   start(msgCacheInterval = 2000) {
     this.#assertRunning();
     this.interval = setInterval(() => {
+      // a timer of an earlier start() outlives stop(), which clears only the last one
+      if (this.#stopped) return;
       if (this.msgCache.length > 0 && this.getAllChannels().length > 0) {
         let m = this.msgCache.shift();
         this.publish(m.msg, m.filter, m.topic, m.props);
@@ -202,6 +204,7 @@ class AMQPPool extends EventEmitter {
 
   // ToDo: Needs some DRYing
   publish(msg, filter, topic, props) {
+    this.#assertRunning();
     let channels = this.getAliveChannels();
     if (typeof filter == 'function') {
       let filteredChannels = filter(channels);

@@ -105,16 +105,16 @@ test('a stale ack after stop() emits nothing', async (t) => {
   assert.deepStrictEqual(heard, []);
 });
 
-test('a publish on a dead channel after stop() emits nothing, and throws without an error listener',
+test('a publish on a dead channel after stop() throws Pool is stopped and emits nothing',
   async (t) => {
     const { pool, channel } = await livePool(t);
     const heard = [];
     pool.on('error', (e) => heard.push(e));
     await pool.stop();
-    assert.doesNotThrow(() => pool.publish({ a: 1 }, () => [channel]));
+    assert.throws(() => pool.publish({ a: 1 }, () => [channel]), { message: 'Pool is stopped' });
     assert.deepStrictEqual(heard, []);
     pool.removeAllListeners('error');
-    assert.doesNotThrow(() => pool.publish({ a: 1 }, () => [channel]));
+    assert.throws(() => pool.publish({ a: 1 }, () => [channel]), { message: 'Pool is stopped' });
   });
 
 test('after stop() the channel and the connection keep only their error listener', async (t) => {
