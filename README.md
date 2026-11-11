@@ -647,31 +647,50 @@ connection closes, is handed back in an `'unconfirmed'` event on the `Channel`:
 ```javascript
 channel.on('unconfirmed', (entries) => {
   for (const entry of entries) {
-    // publish:     { method: 'publish', msg, topic, props, reason }
-    // sendToQueue: { method: 'sendToQueue', queue, msg, props, reason }
+    // publish:     { method: 'publish', msg, topic, props, reason, cause }
+    // sendToQueue: { method: 'sendToQueue', queue, msg, props, reason, cause }
     // reason: 'nack' or 'closed'
+    // cause: the channel's own error, { code, message }, or null
   }
 });
 ```
 
 - `msg` is the message as it was sent (an object is already JSON), and `props` is a copy of
-  the options it was sent with, `messageId` and `timestamp` included. Publishing an entry
-  again with `channel.publish(entry.msg, entry.topic, entry.props)` sends the same content
-  with the same `messageId`.
+  the options it was sent with. Publishing an entry again with
+  `channel.publish(entry.msg, entry.topic, entry.props)` sends the same content with the same
+  `messageId`.
 - A close hands back all of that channel's unconfirmed messages in one event, in publish
   order. A nack hands back one message.
+- `cause` tells a refusal from a drop. When the broker closes the channel with an error of
+  its own, for example `404` for a missing exchange or `406` for a precondition, `cause` is
+  that error's `code` and `message`. Publishing such a message again draws the same error.
+  When the connection closes, `cause` is `null`. It is also `null` for a nack.
 - Each message is handed back at most once, and only after its confirm has failed or its
   channel has closed, never while its confirm is still pending.
-- The event fires on the next tick, after the channel has handled the close.
+- A close the channel asks for itself hands nothing back. That is `close()`, and the
+  re-create after the broker cancels its consumer. The broker has every message published
+  before such a close, and amqplib drops the confirms that arrive while the channel closes.
+- The event fires on the next tick, after the channel has handled the close. Each hand-back
+  also emits an `'info'` event, `{ message: 'unconfirmed messages handed back', count, reason,
+  cause, channelId }`, so it shows in the log even when nothing listens to `'unconfirmed'`.
 - A publish that throws is not held: the caller already knows it failed.
+
+`channel.waitConfirmed(ms = 5000)` waits for the held messages before a shutdown. It resolves
+with `[]` as soon as the broker has confirmed all of them. Otherwise, after `ms`, it resolves
+with the messages still unconfirmed, each with `reason: 'timeout'`. It never rejects and
+never waits longer than `ms`. The messages it returns are released: no later confirm or close
+hands them back, so the caller reports or keeps them. A close during the wait hands its
+messages back as usual, and the wait then resolves with `[]`. `ms` must be a whole number
+from 0 to 2147483647; anything else throws a `TypeError`.
 
 The pool does not re-publish handed-back messages yet. Until it does, an app that needs them
 listens on each channel, from `amqp.getAllChannels()`.
 
 Re-publishing what comes back makes delivery at-least-once. A message the broker routed but
 whose confirm was lost with the connection is in the queue and is also handed back, so
-consumers can get it twice. Both copies carry the same `messageId`, so a consumer can drop
-the second one.
+consumers can get it twice. A `publish()` copy carries the same `messageId`, so a consumer
+can drop the second one. `sendToQueue()` sets no `messageId`: its copies carry one only if
+the caller set `messageId` in its options.
 
 The messages held are those in flight on each amqplib channel: written to or buffered for
 the socket, and not yet confirmed. RabbitMQ normally confirms within milliseconds, so the
