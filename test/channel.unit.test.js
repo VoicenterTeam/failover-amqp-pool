@@ -186,8 +186,9 @@ test('a rejected consume() is reported as an error event, not an unhandled rejec
   assert.ok(!Object.values(e).some(v => v instanceof Channel), 'no Channel object in the event');
 });
 
-test('pool ack/nack of a message whose channel was re-created emits the stale info event', () => {
+test('pool ack/nack of a message whose channel was re-created emits the stale info event', t => {
   const pool = new AMQPPool([]);
+  t.after(() => pool.stop());
   const infos = [];
   pool.on('info', i => infos.push(i));
   const msg = { fields: { deliveryTag: 3 }, properties: { messageId: 'm1', channelId: 'host.gone' } };
@@ -365,11 +366,12 @@ test("a late 'close' or 'error' from a replaced amqplib channel does not mark th
   assert.strictEqual(errors.length, errorsBefore, "no 'error' re-emitted");
 });
 
-test('a non-string vhost builds its path instead of throwing', async () => {
+test('a non-string vhost builds its path instead of throwing', async t => {
   const pool = new AMQPPool([{
     connection: { host: '127.0.0.1', port: 1, username: 'u', password: 'p', vhost: 5, ssl: false, reconnectInterval: 1 },
     channel: { exchange: { name: 'x' } }
   }]);
+  t.after(() => pool.stop());
   const refused = new Promise(r => pool.on('error', r));
   pool.connections.forEach(c => { c.start = () => {}; });   // nothing listens on port 1; end the reconnect loop
   assert.strictEqual(new URL(pool.connections[0].url).pathname, '/5');
