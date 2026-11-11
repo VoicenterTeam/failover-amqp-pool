@@ -324,7 +324,7 @@ test('through RabbitMQ: the consumer span is a child of the producer span', { sk
   const queue = `famqp-test-otel-${process.pid}-${Date.now()}`;
   const admin = await amqplib.connect(LIVE);
   const adminCh = await admin.createChannel();
-  await adminCh.assertQueue(queue, { durable: false });
+  await adminCh.assertQueue(queue, { durable: true });
   const pool = new AMQPPool([{
     connection: { host: u.hostname, port: Number(u.port), username: decodeURIComponent(u.username), password: decodeURIComponent(u.password), reconnectInterval: 50 },
     channel: { prefetch: 5, exchange: { name: 'amq.direct' }, binding: { enabled: true, pattern: queue }, queue: { name: queue } },

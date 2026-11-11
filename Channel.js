@@ -11,6 +11,9 @@ const deliveredOn = new WeakMap();
 // how long a dynamic queue lives without a consumer, ms
 const DYNAMIC_QUEUE_EXPIRES = 1800000;
 
+// the consumer timeout a quorum queue is declared with, ms
+const QUORUM_CONSUMER_TIMEOUT = 7200000;
+
 class Channel extends EventEmitter {
   #isAlive= false;
   #isConnecting = false;
@@ -79,6 +82,14 @@ class Channel extends EventEmitter {
       alternateExchange : this?.exchange?.options?.alternateExchange
     }
   }
+  // The caller's arguments as they are. A quorum queue also gets the consumer timeout, unless the
+  // caller set one: a classic queue takes the broker's own (consumer_timeout on 3.13, none on
+  // 4.3).
+  #queueArguments(given){
+    const quorum = given?.['x-queue-type'] === 'quorum';
+    if(!quorum || given['x-consumer-timeout'] !== undefined) return given || undefined;
+    return { ...given, 'x-consumer-timeout': QUORUM_CONSUMER_TIMEOUT };
+  }
   get queueOptions(){
     let messageTtl = 3600000;
     if(this?.queue?.options?.messageTtl === 'none') messageTtl = undefined
@@ -93,10 +104,16 @@ class Channel extends EventEmitter {
       if(expires === 'none') expires = undefined;
     }
 
+    // A queue the channel names for itself belongs to its connection and is transient; a named
+    // queue is durable. A quorum or stream queue is neither exclusive nor transient, so it is
+    // declared like a named one. What the caller sets in queue.options is kept.
+    const given = this?.queue?.options;
+    const type = given?.arguments?.['x-queue-type'];
+    const connectionBound = this.#temporaryQueue && type !== 'quorum' && type !== 'stream';
     return {
-      exclusive: this?.queue?.options?.exclusive || false,
-      durable: this?.queue?.options?.durable || false,
-      arguments: this?.queue?.options?.arguments || { "x-consumer-timeout": 7200000 },
+      exclusive: given?.exclusive ?? connectionBound,
+      durable: given?.durable ?? !connectionBound,
+      arguments: this.#queueArguments(given?.arguments),
       noAck: !this.prefetch,
       expires,
       messageTtl: messageTtl ,
@@ -202,7 +219,9 @@ class Channel extends EventEmitter {
           return true;
         })
         .then(() => {
-          if (this?.binding?.enabled && this?.queue?.name && this?.exchange?.name) {
+          // a dynamic queue is bound by its first consume; a new connection lost it with the old
+          const bind = this?.binding?.enabled || this.#temporaryQueue;
+          if (bind && this?.queue?.name && this?.exchange?.name) {
             return this.#bindQueue(this.queue.name, this.exchange.name, this?.binding?.pattern || '', this?.binding?.options || {});
           }
           return true;

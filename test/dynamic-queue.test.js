@@ -136,7 +136,8 @@ test('live: a queue that does not exist yet is declared, bound and consumed',
       password: decodeURIComponent(u.password), ssl: false, reconnectInterval: 50 },
     channel: { prefetch: 5, exchange: { name: exchange, type: 'fanout' },
       binding: { enabled: true },
-      queue: { options: { durable: false, autoDelete: false, messageTtl: 60000 } } },
+      queue: { options: { durable: true, exclusive: false, autoDelete: false,
+        messageTtl: 60000 } } },
   }]);
   let dynamicName;
   let channel;

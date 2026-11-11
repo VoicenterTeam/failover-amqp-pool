@@ -54,7 +54,7 @@ test('an oversized header is refused by publish; the connection stays up', { ski
   const queue = `famqp-test-big-${process.pid}-${Date.now()}`;
   const admin = await amqplib.connect(URL_);
   const adminCh = await admin.createChannel();
-  await adminCh.assertQueue(queue, { durable: false });
+  await adminCh.assertQueue(queue, { durable: true });
   const pool = new AMQPPool([{
     connection: { host: u.hostname, port: Number(u.port), username: decodeURIComponent(u.username), password: decodeURIComponent(u.password), reconnectInterval: 50 },
     channel: { exchange: { name: 'amq.direct' }, binding: { enabled: true, pattern: queue }, queue: { name: queue } }
