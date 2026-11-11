@@ -35,7 +35,9 @@ function build(meter, provider) {
   const channels = meter.createObservableUpDownCounter(CHANNELS.name, options(CHANNELS));
   const cached = meter.createObservableUpDownCounter(CACHED.name, options(CACHED));
   const observables = [connections, channels, cached];
-  const callback = result => observe(result, connections, channels, cached);
+  // the servers this meter has been told of, kept per meter: a new SDK has no series to zero
+  const seen = { connections: new Map(), channels: new Map() };
+  const callback = result => observe(result, seen, connections, channels, cached);
   meter.addBatchObservableCallback(callback, observables);
   const release = () => meter.removeBatchObservableCallback(callback, observables);
   const live = meter !== createNoopMeter();
@@ -68,9 +70,11 @@ function instruments() {
   return built;
 }
 
-// Two pools on one server are one series: their counts are summed before they are observed.
-function observe(result, connections, channels, cached) {
-  const counts = { connections: new Map(), channels: new Map() };
+// Two pools on one server are one series: their counts are summed before they are observed. A
+// server once observed reads 0 when its pools have all stopped, or the SDK repeats its last count.
+function observe(result, seen, connections, channels, cached) {
+  const zeros = map => new Map([...map].map(([k, server]) => [k, { server, alive: 0, down: 0 }]));
+  const counts = { connections: zeros(seen.connections), channels: zeros(seen.channels) };
   let waiting = 0;
   const row = (map, url) => {
     const server = serverAttributes(url);
@@ -93,8 +97,11 @@ function observe(result, connections, channels, cached) {
       // One pool that cannot be read hides only its own counts.
     }
   }
-  for (const [map, instrument] of [[counts.connections, connections], [counts.channels, channels]]) {
-    for (const { server, alive, down } of map.values()) {
+  const series = [[counts.connections, connections, seen.connections],
+    [counts.channels, channels, seen.channels]];
+  for (const [map, instrument, known] of series) {
+    for (const [key, { server, alive, down }] of map) {
+      known.set(key, server);
       const attributes = { [ATTR.system]: SYSTEM, ...server };
       result.observe(instrument, alive, { ...attributes, [ATTR.state]: 'alive' });
       result.observe(instrument, down, { ...attributes, [ATTR.state]: 'down' });
