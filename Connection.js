@@ -3,6 +3,15 @@ const EventEmitter = require('events').EventEmitter;
 const os = require('os');
 const { countConnectionError, countReconnect } = require('./telemetry/metrics');
 
+// emitWarning throws on a value that is neither a string nor an Error, and String() can throw
+function warn(value) {
+  try {
+    process.emitWarning(value instanceof Error ? value : String(value));
+  } catch {
+    process.emitWarning('a listener threw an unprintable value');
+  }
+}
+
 
 class Connection extends EventEmitter {
   #isAlive = false;
@@ -56,6 +65,18 @@ class Connection extends EventEmitter {
     }
   }
 
+  // An emit from inside the connect chain (#90). A listener's throw is reported as 'error', and a
+  // throw from that report becomes a process warning: neither may reach the connect catch, which
+  // would mark this live connection dead and connect again beside it.
+  #report(event, payload) {
+    try {
+      this.emit(event, payload);
+    } catch (error) {
+      if (event === 'error') return warn(error);
+      this.#report('error', { error, url: this.safeUrl });
+    }
+  }
+
   start() {
     // a disconnected connection stays down (a connect already in flight is discarded below)
     if (this.#disconnected) return;
@@ -82,16 +103,10 @@ class Connection extends EventEmitter {
             this.emit('error', { error: error , url: this.safeUrl})
           });
           this.alive = true;
-          this.emit('info', {message: 'Connection created', url: this.safeUrl});
+          this.#report('info', {message: 'Connection created', url: this.safeUrl});
           this.connection()
-          // once per connect, reconnects included; the URL without username or password. A
-          // listener's throw is reported, and must not reach the catch below, which would
-          // connect again beside this live connection.
-          try {
-            this.emit('connection', this.safeUrl);
-          } catch (error) {
-            this.emit('error', { error: error , url: this.safeUrl})
-          }
+          // once per connect, reconnects included; the URL without username or password
+          this.#report('connection', this.safeUrl);
         })
         .catch((error) => {
           this.alive = false;
@@ -106,7 +121,7 @@ class Connection extends EventEmitter {
       try {
         channel.create()
       } catch (error) {
-          this.emit('error', { error: error , url: this.safeUrl})
+          this.#report('error', { error: error , url: this.safeUrl})
       }
       
     })
