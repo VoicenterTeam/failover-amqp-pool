@@ -73,9 +73,12 @@ class Connection extends EventEmitter {
           });
           this.amqpConnection.on('error', (error) => {
             countConnectionError(this.url, error);
-            // a create in flight reports it as its own failure, once (#63): the close fails it
-            const held = this.channels.filter(channel => channel._holdConnectionError?.(error));
-            if (held.length) return;
+            // A numeric code is the broker's ConnectionClose (amqplib sets it there only): the
+            // close fails every create in flight, and it is reported once, here. A socket error
+            // or heartbeat timeout has none, and the creates report as before.
+            if (typeof error?.code === 'number') {
+              for (const channel of this.channels) channel._connectionRefused?.(error);
+            }
             this.emit('error', { error: error , url: this.safeUrl})
           });
           this.alive = true;

@@ -25,7 +25,7 @@ class Channel extends EventEmitter {
   #retryDelay = 0;
   #temporaryQueue = false;
   #createFailure = null;   // the channel error a create in flight holds back for its own report
-  #connectionFailure = null;   // the connection error that ended a create in flight
+  #connectionFailure = null;   // the broker's connection close that failed a create in flight
   constructor(connection, channelConfig) {
     super();
     this.hash = hash(channelConfig)
@@ -155,12 +155,10 @@ class Channel extends EventEmitter {
       return Promise.resolve(false);   // already closed
     }
   }
-  // The connection's error while a create is in flight: the broker closed the connection, which
-  // fails the create, and the create reports it as its own failure, once. True when taken.
-  _holdConnectionError(error){
-    if (!this.#isConnecting || this.#closed) return false;
-    this.#connectionFailure ??= error;
-    return true;
+  // The broker closed the connection while a create is in flight: the Connection reports that
+  // refusal once, so the create it fails adds no error of its own (#74)
+  _connectionRefused(error){
+    if (this.#isConnecting) this.#connectionFailure ??= error;
   }
   #createID(){
     return `${os.hostname}.${uuid()}`
@@ -229,7 +227,6 @@ class Channel extends EventEmitter {
     clearTimeout(this.#retryTimer);
     this.#retryTimer = null;
     this.#createFailure = null;
-    this.#connectionFailure = null;
     let created = false;
     this.#createChannel()
     .then(() => {
@@ -276,13 +273,14 @@ class Channel extends EventEmitter {
         })
         .catch((err) => {
           if (this.#closed) return;   // its create was cut short by the close: no error to report
-          // a connection closed by the broker rejects the call with a generic error: the
-          // refusal is the connection's
-          const cause = this.#connectionFailure ?? err;
-          this.emit('error', {message: 'cant establish a channel', err: cause});
+          // a connection the broker closed rejects the call with a generic error; the refusal
+          // was the connection's, and the Connection reported it
+          const refused = this.#connectionFailure;
+          if (!refused) this.emit('error', {message: 'cant establish a channel', err: err});
           this.emit('info', {
             message: 'channel create failed', channelId: this._id,
-            queue: this.queue?.name, exchange: this.exchange?.name, error: cause?.message
+            queue: this.queue?.name, exchange: this.exchange?.name,
+            error: (refused ?? err)?.message
           });
           this.alive = false;
           return this.connection
