@@ -26,6 +26,8 @@ class Channel extends EventEmitter {
   #temporaryQueue = false;
   #createFailure = null;   // the channel error a create in flight holds back for its own report
   #connectionFailure = null;   // the broker's connection close that failed a create in flight
+  // amqplib channel -> the messages published on it that the broker has not confirmed (#79)
+  #unconfirmed = new WeakMap();
   constructor(connection, channelConfig) {
     super();
     this.hash = hash(channelConfig)
@@ -174,6 +176,7 @@ class Channel extends EventEmitter {
             try { Promise.resolve(amqpChannel.close()).catch(() => {}); } catch (e) {}   // closed
             throw new Error('channel closed while it was being created');
           }
+          this.#trackConfirms(amqpChannel);
           let old_id = this._id;
           this._id = this.#createID();
           // set before the event: a listener that closes the channel must find it to close
@@ -325,6 +328,40 @@ class Channel extends EventEmitter {
           if(this.autoConsume || this.#consumingOn) this.consume()
         });
   }
+  // Holds what is published on this amqplib channel until the broker confirms it. Prepended, so
+  // it runs before amqplib's own 'close' listener, which fails each pending confirm callback:
+  // the pending messages come back in one event, and those callbacks find nothing left.
+  #trackConfirms(amqpChannel){
+    const pending = new Set();
+    this.#unconfirmed.set(amqpChannel, pending);
+    amqpChannel.prependListener('close', () => {
+      const entries = [...pending];
+      pending.clear();
+      this.#handBack(entries, 'closed');
+    });
+  }
+  // The confirm callback amqplib gets with the message: an ack forgets it, a nack hands it
+  // back. Neither does anything once the message has left the set.
+  #confirmed(pending, entry){
+    return (err) => {
+      if (!pending.delete(entry) || !err) return;
+      this.#handBack([entry], 'nack');
+    };
+  }
+  // Sends the message to amqplib with its confirm callback; tracked only once amqplib took it
+  #sendTracked(entry, send){
+    const pending = this.#unconfirmed.get(this.amqpChannel);
+    const result = send(pending ? this.#confirmed(pending, entry) : undefined);
+    pending?.add(entry);
+    return result;
+  }
+  // On the next tick: a listener runs after amqplib and this Channel have handled the close or
+  // the confirm, and its throw cannot cut that handling short
+  #handBack(entries, reason){
+    if (entries.length === 0) return;
+    const handed = entries.map(entry => ({ ...entry, reason }));
+    process.nextTick(() => this.emit('unconfirmed', handed));
+  }
   #createQueue(queue, options){
       // the amqplib channel whose passive check is in flight: its 404 is the expected answer
       const checked = this.amqpChannel;
@@ -373,9 +410,11 @@ class Channel extends EventEmitter {
         let message = Buffer.from(msg);
         const exchange = options.exchange || this.exchange.name;
         const named = this.#exchangeName(options);
+        const entry = { method: 'publish', msg, topic, props: { ...options } };
         try {
-          publishing(this.connection.url, named, options, withContext =>
-            this.amqpChannel.publish(exchange, topic || "", message, withContext));
+          this.#sendTracked(entry, confirmed =>
+            publishing(this.connection.url, named, options, withContext =>
+              this.amqpChannel.publish(exchange, topic || "", message, withContext, confirmed)));
         } catch (error) {
           countSent(this.connection.url, named, thrownType(error));
           throw error;
@@ -539,15 +578,15 @@ class Channel extends EventEmitter {
       Object.assign(msg, this.msg);
       msg = JSON.stringify(msg)
     }
-    msg = Buffer.from(msg)
+    const entry = { method: 'sendToQueue', queue, msg, props: options && { ...options } };
+    const content = Buffer.from(msg)
     // the default exchange has no name; telemetry names it amq.default
     try {
-      // no options and no SDK: publishing hands back undefined, and amqplib gets the two
-      // arguments it always got
-      publishing(this.connection.url, undefined, options, withContext =>
-        withContext === undefined
-          ? this.amqpChannel.sendToQueue(queue, msg)
-          : this.amqpChannel.sendToQueue(queue, msg, withContext));
+      // no options and no SDK: publishing hands back undefined, and amqplib gets undefined
+      // options, as it got no options before, then the confirm callback
+      this.#sendTracked(entry, confirmed =>
+        publishing(this.connection.url, undefined, options, withContext =>
+          this.amqpChannel.sendToQueue(queue, content, withContext, confirmed)));
     } catch (error) {
       countSent(this.connection.url, undefined, thrownType(error));
       throw error;
