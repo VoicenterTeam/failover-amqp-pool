@@ -22,6 +22,17 @@ const {
 // Every live pool's reader; a pool removes its own on stop().
 const pools = new Set();
 let built;
+// What each meter provider has reported: the servers of its count series, and whether it has a
+// cached series. A provider set again keeps its record, since its SDK still holds those series
+// and repeats their last values; a new provider starts empty, having none.
+const records = new WeakMap();
+
+function record(provider) {
+  const empty = () => ({ connections: new Map(), channels: new Map(), cached: false });
+  if (Object(provider) !== provider) return empty();
+  if (!records.has(provider)) records.set(provider, empty());
+  return records.get(provider);
+}
 
 const options = row => ({ unit: row.unit, description: row.description });
 
@@ -35,8 +46,7 @@ function build(meter, provider) {
   const channels = meter.createObservableUpDownCounter(CHANNELS.name, options(CHANNELS));
   const cached = meter.createObservableUpDownCounter(CACHED.name, options(CACHED));
   const observables = [connections, channels, cached];
-  // the servers this meter has been told of, kept per meter: a new SDK has no series to zero
-  const seen = { connections: new Map(), channels: new Map() };
+  const seen = record(provider);
   const callback = result => observe(result, seen, connections, channels, cached);
   meter.addBatchObservableCallback(callback, observables);
   const release = () => meter.removeBatchObservableCallback(callback, observables);
@@ -107,7 +117,9 @@ function observe(result, seen, connections, channels, cached) {
       result.observe(instrument, down, { ...attributes, [ATTR.state]: 'down' });
     }
   }
-  if (pools.size) result.observe(cached, waiting, { [ATTR.system]: SYSTEM });
+  // once reported, the cached series reads 0 after the last pool stops
+  if (pools.size) seen.cached = true;
+  if (seen.cached) result.observe(cached, waiting, { [ATTR.system]: SYSTEM });
 }
 
 // server.address and server.port of a connection URL, kept per URL; the port only when it is

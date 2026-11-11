@@ -183,9 +183,10 @@ test('pool counts: connections and channels by state, and cached messages', asyn
     [{ ...server, 'amqp_pool.state': 'alive' }, 0], [{ ...server, 'amqp_pool.state': 'down' }, 2]]);
   assert.deepStrictEqual(values(await points('amqp_pool.message.cached')), [[RABBIT, 2]]);
   await pool.stop();
-  // the SDK repeats an async instrument's last value; a read after stop() would give 3
+  // a stopped pool is read no more: a read would give 3, and an unobserved series would repeat 2
   pool.msgCache.push({});
-  assert.deepStrictEqual(values(await points('amqp_pool.message.cached')), [[RABBIT, 2]], 'a stopped pool is read no more');
+  assert.deepStrictEqual(values(await points('amqp_pool.message.cached')), [[RABBIT, 0]],
+    'a stopped pool is read no more, and the last one stopped reads 0');
 });
 
 // Reading `channel.alive` on a dead channel of a live connection starts a create; the counts
