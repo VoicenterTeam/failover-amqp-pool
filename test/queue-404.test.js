@@ -46,14 +46,26 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 const named = () => ({ exchange: { name: 'events' }, queue: { name: 'work' } });
 const dynamic = () => ({ exchange: { name: 'events' }, binding: { enabled: true }, prefetch: 1 });
 
+// the id the channel had when its passive check ran, by fields, not by an info's wording
+function checkedIds(ctx) {
+  const ids = [];
+  return { ids, tune: c => {
+    const check = c.checkQueue.bind(c);
+    c.checkQueue = q => { ids.push(ctx.channel._id); return check(q); };
+  } };
+}
+
 test('a first declare of a missing named queue emits no error and is declared', async () => {
-  const { channel, errors, infos, last } = setup(named());
+  const ctx = {};
+  const { ids, tune } = checkedIds(ctx);
+  const { channel, errors, infos, last } = Object.assign(ctx, setup(named(), tune));
   const up = new Promise(r => channel.once('ready', r));
   channel.create();
   await up;
   assert.deepStrictEqual(errors, []);
   assert.strictEqual(last().asserted.queue, 'work');
-  assert.ok(infos.some(i => i?.message === 'queue not found, declaring it' && i.queue === 'work'));
+  assert.strictEqual(ids.length, 1);
+  assert.ok(infos.some(i => i?.queue === 'work' && i.channelId === ids[0]), 'info names both');
 });
 
 test('a re-create of a dynamic queue the broker lost emits no error and consumes again', async () => {
@@ -86,27 +98,43 @@ test('a 404 on a channel with no check in flight is an error', async () => {
 });
 
 test('a second 404 after the check settled is an error: the exemption is the one check', async () => {
-  const { channel, errors, last } = setup(named());
+  // the first check draws the expected 404; the re-create's check finds the queue and settles
+  // on the channel that stays current, so only the clear tells a later 404 there from the check's
+  const { channel, errors, made, last } = setup(named(), c => {
+    if (made.length >= 2) c.queues.add('work');
+  });
   const up = new Promise(r => channel.once('ready', r));
   channel.create();
   await up;
+  const again = new Promise(r => channel.once('recreated', r));
+  channel.create();
+  await again;
   await settle();
   assert.deepStrictEqual(errors, []);
   last().emit('error', notFound());   // e.g. a publish to a deleted queue
   assert.strictEqual(errors.length, 1);
+  assert.strictEqual(errors[0].code, 404);
 });
 
 test('one create holding the expected 404 and a refused bind: only the bind is an error', async () => {
-  const { channel, errors } = setup({ ...named(), binding: { enabled: true } }, c => {
-    c.bindQueue = () => { const e = notFound(); c.emit('error', e); return Promise.reject(e); };
-  });
+  const refused = [];
+  const ctx = {};
+  const { ids, tune } = checkedIds(ctx);
+  const { channel, errors } = Object.assign(ctx, setup({ ...named(), binding: { enabled: true } },
+    c => {
+      tune(c);
+      c.bindQueue = () => {
+        const e = notFound(); refused.push(e); c.emit('error', e); return Promise.reject(e);
+      };
+    }));
   channel.create();
   await settle();
   await settle();
-  assert.ok(errors.length >= 1, 'the refused bind reached error');
-  assert.ok(errors.every(e => e?.message !== 'queue not found, declaring it'));
-  // one 404 per failed create: the create's own 'cant establish a channel', not the check's
-  assert.strictEqual(errors.filter(e => e?.err?.code === 404).length, errors.length);
+  // one error for the failed create, carrying the bind's refusal; none names the checked queue
+  assert.strictEqual(refused.length, 1);
+  assert.strictEqual(errors.length, 1);
+  assert.strictEqual(errors[0].err, refused[0]);
+  assert.ok(errors.every(e => e?.queue !== 'work' && e?.channelId !== ids[0]));
 });
 
 test('a check that fails with another code is an error', async () => {
