@@ -32,11 +32,13 @@ async function drain(queue) {
   }
 }
 
-async function removeExchange(exchange) {
+// the row's queue and exchange; a Channel re-created after its drain can declare the queue again
+async function removeAll(name) {
   const conn = await amqplib.connect(URL_);
   try {
     const ch = await conn.createChannel();
-    await ch.deleteExchange(exchange);
+    await ch.deleteQueue(`${name}.q`);
+    await ch.deleteExchange(`${name}.x`);
   } finally {
     await conn.close();
   }
@@ -51,8 +53,11 @@ async function liveChannel(t, label) {
     queue: { name: `${name}.q` }, binding: { enabled: true, pattern: 'k' }, topic: 'k' });
   channel.on('error', () => {});
   conn.addChannel(channel);
-  t.after(() => removeExchange(`${name}.x`).catch(() => {}));
-  t.after(() => conn.disconnect());
+  // in this order: the Connection is down before its queue and exchange go
+  t.after(async () => {
+    await conn.disconnect();
+    await removeAll(name).catch(() => {});
+  });
   const up = new Promise(resolve => channel.once('ready', resolve));
   conn.start();
   await up;
