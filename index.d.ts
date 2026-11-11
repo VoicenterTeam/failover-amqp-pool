@@ -77,6 +77,9 @@ declare class AMQPPool extends EventEmitter {
     on(event: 'error', listener: (error: any) => void): this;
     /** A string or an object with a `message`. */
     on(event: 'info', listener: (info: any) => void): this;
+    /** Only from stop(): what was still unconfirmed when its wait ended, each with the id of
+     *  the channel that held it. While the pool runs, handed-back messages are re-sent. */
+    on(event: 'unconfirmed', listener: (entries: Array<AMQPPool.StopEntry>) => void): this;
     /** Other event names. Excludes the names above so a mistyped listener for one of them is
      *  a type error, not a fallback match. */
     on<E extends string | symbol>(
@@ -90,6 +93,7 @@ declare class AMQPPool extends EventEmitter {
     once(event: 'connection', listener: (url: string) => void): this;
     once(event: 'channelMessage', listener: (msg: ConsumeMessage) => void): this;
     once(event: 'error' | 'info', listener: (payload: any) => void): this;
+    once(event: 'unconfirmed', listener: (entries: Array<AMQPPool.StopEntry>) => void): this;
     once<E extends string | symbol>(
         event: E extends AMQPPool.PoolEvent ? never : E,
         listener: (...args: any[]) => void
@@ -139,7 +143,37 @@ declare namespace AMQPPool {
 
     /** Every event name the pool emits with a typed payload. */
     type PoolEvent =
-        'ready' | 'recreated' | 'close' | 'connection' | 'channelMessage' | 'error' | 'info';
+        'ready' | 'recreated' | 'close' | 'connection' | 'channelMessage' | 'error' | 'info' |
+        'unconfirmed';
+
+    /** The channel's own error a 'closed' entry carries: 404 or 406, say. */
+    interface UnconfirmedCause {
+        code: number | undefined;
+        message: string;
+    }
+
+    interface UnconfirmedCommon {
+        /** As sent: an object was JSON already. */
+        msg: string;
+        /** How many times the pool sent it again. */
+        attempts: number;
+        /** 'nack' and 'closed' from the broker; 'timeout' from waitConfirmed(). */
+        reason: 'nack' | 'closed' | 'timeout';
+        /** The error the channel closed with, on every message that close hands back. null for
+         *  a connection drop, a nack or a timeout. */
+        cause: UnconfirmedCause | null;
+    }
+
+    /** A message a Channel holds until the broker confirms it, handed back by 'unconfirmed'
+     *  or returned by waitConfirmed(). */
+    type UnconfirmedEntry =
+        (UnconfirmedCommon & { method: 'publish', topic: string, props: PublishOptions }) |
+        (UnconfirmedCommon & {
+            method: 'sendToQueue', queue: string, props: Options.Publish | undefined
+        });
+
+    /** An entry in stop()'s report, with the id of the channel that held it. */
+    type StopEntry = UnconfirmedEntry & { channelId: string };
 
     // Actually options are different for Queue, Exchange, Channel and so on...
     // Here we just put all the things into one object and make all props non mandatory
@@ -256,7 +290,8 @@ declare namespace AMQPPool {
         Channel | Array<Channel> | null | undefined | false;
 
     type ChannelEvent =
-        'ready' | 'recreated' | 'message' | 'channelMessage' | 'close' | 'error' | 'info';
+        'ready' | 'recreated' | 'message' | 'channelMessage' | 'close' | 'error' | 'info' |
+        'unconfirmed';
 
     /** Not exported at runtime: reach one through `pool.getAllChannels()` or the 'ready' event. */
     interface Channel extends EventEmitter {
@@ -309,12 +344,24 @@ declare namespace AMQPPool {
         on(event: 'message' | 'channelMessage', listener: (msg: ConsumeMessage) => void): this;
         on(event: 'close', listener: () => void): this;
         on(event: 'error' | 'info', listener: (payload: any) => void): this;
+        /** A nack hands back one message; a close of the amqplib channel, all it held, in one
+         *  event and in publish order. A close the channel asked for itself hands back nothing
+         *  while the connection is up. Fires on the next tick. */
+        on(event: 'unconfirmed', listener: (entries: Array<UnconfirmedEntry>) => void): this;
         on<E extends string | symbol>(
             event: E extends ChannelEvent ? never : E,
             listener: (...args: any[]) => void
         ): this;
 
         hasCachedAck(): boolean;
+        /** Resolves with [] once the broker has confirmed everything the channel holds, or after
+         *  `ms` (default 5000) with what is still unconfirmed, reason 'timeout'. Those are
+         *  released: nothing hands them back later. Never rejects. Throws a TypeError for an ms
+         *  that is not a whole number from 0 to 2147483647. */
+        waitConfirmed(ms?: number): Promise<Array<UnconfirmedEntry>>;
+        /** Sends a handed-back entry again, as publish() or sendToQueue() sent it, and throws as
+         *  they do. Its next hand-back carries attempts + 1. */
+        resend(entry: UnconfirmedEntry): void;
         /**
          * Sends through the default exchange. `options` are amqplib's and are not changed.
          * Throws Error('Channel is dead!') on a dead channel, after an 'error' event.
