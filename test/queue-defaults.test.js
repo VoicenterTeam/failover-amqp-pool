@@ -10,6 +10,7 @@ const Channel = require('../Channel');
 const { FakeAmqpChannel } = require('./helpers/fakes');
 const { MGMT, mgmt, until, queuePath, queueInfo, connectionNamed, closeConnection } =
   require('./helpers/mgmt');
+const { own } = require('./helpers/own');
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const created = ch => new Promise(resolve => {
@@ -272,7 +273,9 @@ async function livePool(t, channelConf, queueNames = []) {
   const u = new URL(URL_);
   const exchange = unique('x');
   const connection_name = unique('conn');
+  // #93: each handle is owned as it is acquired; a row that timed out releases it at once
   const admin = await amqplib.connect(URL_);
+  await own(t, () => admin.close().catch(() => {}));
   const adminCh = await admin.createChannel();
   const pool = new AMQPPool([{
     connection: { host: u.hostname, port: Number(u.port), username: decodeURIComponent(u.username),
@@ -285,13 +288,12 @@ async function livePool(t, channelConf, queueNames = []) {
   const events = [];   // the pool's 'error' and 'info' events in order, for a row that gives up
   pool.on('error', e => { errors.push(e); events.push(['error', e]); });
   pool.on('info', i => events.push(['info', i]));
-  t.after(async () => {
+  await own(t, async () => {
     const stopped = pool.stop();
     pool.on('error', () => {});
     await stopped.catch(() => {});
     for (const q of queueNames) await adminCh.deleteQueue(q).catch(() => {});
     await adminCh.deleteExchange(exchange).catch(() => {});
-    await admin.close().catch(() => {});
   });
   const connectionName = `${connection_name}_${os.hostname}`;
   return { pool, admin, adminCh, exchange, errors, events, queueNames, connectionName };

@@ -7,6 +7,7 @@ const { spawn } = require('node:child_process');
 const path = require('node:path');
 const { leftovers } = require('./helpers/leak-guard');
 const { mgmt, queuePath, queueInfo } = require('./helpers/mgmt');
+const { own } = require('./helpers/own');
 
 const ROOT = path.resolve(__dirname, '..');
 const CHILD = `
@@ -106,7 +107,8 @@ function run(t, cfg) {
       SIGLOG_CFG: JSON.stringify({ root: ROOT, queue: 'sigint-log', ...cfg })
     }
   });
-  t.after(() => child.kill('SIGKILL'));
+  // #93: a row that timed out before this kills the child at once; its next wait then fails
+  own(t, () => child.kill('SIGKILL')).catch(() => {});
   const lines = [];
   const waiters = [];
   let buf = '';
@@ -351,7 +353,7 @@ test('SIGINT closes the live pool connection on the broker',
       user = `sigintlog-${process.pid}`;
       pass = 'sigintlog-pass';
       assert.ok((await api('PUT', `users/${user}`, { password: pass, tags: '' })).ok);
-      t.after(() => api('DELETE', `users/${user}`));
+      await own(t, () => api('DELETE', `users/${user}`));
       const all = { configure: '.*', write: '.*', read: '.*' };
       assert.ok((await api('PUT', `permissions/%2F/${user}`, all)).ok);
       connections = async () => {
