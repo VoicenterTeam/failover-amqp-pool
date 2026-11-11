@@ -1,10 +1,12 @@
 // What SIGINT does to a pool: it stops, logs one 'info' (or 'error' when stop() rejects), and
 // never exits; the app owns the exit. Each row runs a child process that is sent a real SIGINT.
 // No broker except the last row (FAMQP_TEST_URL, and FAMQP_TEST_MGMT_URL for the broker count).
-const { test } = require('node:test');
+const { test, after } = require('node:test');
 const assert = require('node:assert');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
+const { leftovers } = require('./helpers/leak-guard');
+const { mgmt, queuePath, queueInfo } = require('./helpers/mgmt');
 
 const ROOT = path.resolve(__dirname, '..');
 const CHILD = `
@@ -50,7 +52,8 @@ const CHILD = `
   }
   const Pool = require(cfg.root);
   const base = process.listenerCount('SIGINT');
-  const pool = new Pool([{ connection: cfg.connection, channel: { queue: { name: cfg.queue } } }]);
+  const queue = { name: cfg.queue, options: cfg.queueOptions };
+  const pool = new Pool([{ connection: cfg.connection, channel: { queue } }]);
   const lateChannel = pool.connections[0].channels[0];
   const settle = () => turns(20, () => {
     out({ settled: true, sigint: process.listenerCount('SIGINT'), base });
@@ -329,6 +332,7 @@ test('a second SIGINT, with no other listener, ends the process by signal', asyn
 // A user and its connections are the broker-side handle on this pool alone.
 const LIVE = process.env.FAMQP_TEST_URL;
 const MGMT = process.env.FAMQP_TEST_MGMT_URL;
+const STARTED = Date.now();   // the live row's queue carries -<pid>-<ms>, ms from here on
 test('SIGINT closes the live pool connection on the broker',
   { skip: LIVE ? false : 'FAMQP_TEST_URL not set' }, async (t) => {
     const u = new URL(LIVE);
@@ -355,8 +359,10 @@ test('SIGINT closes the live pool connection on the broker',
         return (await res.json()).length;
       };
     }
+    const queue = `famqp-sigint-live-${process.pid}-${Date.now()}`;
     const r = run(t, {
-      hold: true, queue: `sigint-live-${process.pid}`,
+      // #92: exclusive, so the broker deletes it with the pool's connection however the row ends
+      hold: true, queue, queueOptions: { exclusive: true, durable: false },
       connection: {
         host: u.hostname, port: Number(u.port), ssl: false, username: user, password: pass
       }
@@ -365,6 +371,8 @@ test('SIGINT closes the live pool connection on the broker',
     if (connections) {
       for (let i = 0; i < 500 && (await connections()) !== 1; i++) await nap();
       assert.strictEqual(await connections(), 1, 'the pool never showed on the broker');
+      // the child is ready on its connection; its channel declares the queue a moment later
+      await queueInfo(queue);
     }
     r.child.kill('SIGINT');
     // the pool's own channel and connection events are 'info' too; the SIGINT one is a string
@@ -381,5 +389,16 @@ test('SIGINT closes the live pool connection on the broker',
     if (connections) {
       for (let i = 0; i < 500 && (await connections()) !== 0; i++) await nap();
       assert.strictEqual(await connections(), 0, 'the pool left a connection on the broker');
+      // #92: the queue goes with the pool's connection
+      const gone = async () => (await mgmt('GET', queuePath(queue))) === null;
+      for (let i = 0; i < 100 && !(await gone()); i++) await nap();
+      assert.ok(await gone(), 'the row left its queue on the broker');
     }
   });
+
+// #65 for this file: no famqp- queue or exchange this run declared is left on the broker
+after(async () => {
+  if (!LIVE || !MGMT) return;
+  const get = (p) => mgmt('GET', p);
+  assert.deepStrictEqual(await leftovers(get, { pid: process.pid, since: STARTED }), []);
+});
