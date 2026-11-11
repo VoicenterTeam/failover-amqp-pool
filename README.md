@@ -415,11 +415,11 @@ retry publishes it only on the returned channels that have not taken it yet.
 `start(msgCacheInterval)` retries the cache every `msgCacheInterval` ms (default 2000), oldest
 first, and a tick sends every cached message that a live channel takes, in publish order. A
 message that cannot go out yet keeps its place, and does not hold back a newer one that a live
-channel takes. A channel that fails in a
-tick is not tried again in that tick, so the messages waiting for it keep their order. The tick
-reports only the first failed channel as an `'error'`; a down `Channel` that the tick tries also
-emits its own `'channel is dead!'` error, which the pool forwards. A message that a listener
-publishes during a tick and that is cached waits behind the ones cached before it.
+channel takes. A channel that fails in a tick is not tried again in that tick, so the messages
+waiting for it keep their order. The tick reports only the first failed channel as an
+`'error'`; a down `Channel` that the tick tries also emits its own `'channel is dead!'` error,
+which the pool forwards. A message that a listener publishes during a tick and that is cached
+waits behind the ones cached before it, until the next tick.
 
 A custom filter that throws while a tick retries its message is reported as an `'error'`, with
 what it threw, and the message is dropped with one `'info'` event,
@@ -427,11 +427,15 @@ what it threw, and the message is dropped with one `'info'` event,
 during a `publish()` call throws to that call, and nothing is cached.
 
 The tick runs in a timer, where a throw would end the process. So when no `'error'` listener of
-yours hears one of the tick's errors, the pool writes it as a process warning instead, and a
-listener that throws on the tick's events is a process warning too. A `publish()` call that
+yours hears one of the tick's own errors, the pool writes it as a process warning instead. A
+listener that throws on the tick's own `'error'` and `'info'` events is a process warning too.
+A `Channel`'s events reach your listeners from inside its `publish()`, so a listener that
+throws on one of those, such as `'message published'`, fails that publish: the message is kept
+cached and sent again on a later tick, though it already went out. A `publish()` call that
 fails with no `'error'` listener throws that error to the call, as an `EventEmitter` does, and
-caches nothing, so publishing again sends the message once. With a listener, the message is
-cached first and your listener hears the error after.
+caches nothing, so publishing again does not leave a cached copy behind; a channel that took
+the message before the failure gets it again. With a listener, the message is cached first and
+your listener hears the error after.
 
 ## Full Configuration Options
 
