@@ -65,7 +65,9 @@ Migrating:
 - **A missing queue is not an `'error'`.** The check that finds no queue (`404 NOT_FOUND`) before
   the pool declares it, on a reconnect of a dynamic queue or the first declare of a named one, is
   an `'info'` event `{ message: 'queue not found, declaring it', queue, channelId }`. Any other
-  404 (a publish to a deleted queue, a refused bind) is still an `'error'`.
+  404 (a publish to a deleted queue, a refused bind) is still an `'error'`. The close that 404
+  causes on the checking channel is not a `'close'` either: nothing reaches the app for it. A
+  real channel close still emits `'close'`.
 - **A dynamic quorum or stream queue** cannot be exclusive or transient (the broker refuses it
   with 406), so a dynamic queue whose `arguments` set `x-queue-type` to `'quorum'` or `'stream'`
   defaults to `exclusive: false, durable: true`, as a named queue does. An explicit
@@ -139,6 +141,12 @@ Migrating:
   channel not alive, emits an `'info'` event
   `{ message: 'channel create failed', channelId, queue, exchange, error }` (no
   `'channel created'` info), and retries with backoff (see [Channel re-creates](#channel-re-creates)).
+- A failed create emits one `'error'`, `{ message: 'cant establish a channel', err }`, where `err`
+  is the broker's refusal with its `code` (for example 403 or 406). Before, the refusal reached
+  the app as well on its own (the broker's error, once from the channel and once from the queue
+  check, or `'cant assert a exchange ...'` for a refused exchange), so code that read `e.code` on
+  those reads `e.err.code` on this one. A refusal the create recovers from (a durable exchange
+  that is declared otherwise) is still reported once, as the broker's error.
 
 ## Installation
 
@@ -555,6 +563,9 @@ Before 3.0.0 `'ready'` fired on every re-create. Code that relied on that to cal
 `'channel is dead!'` and `'Message is null'` errors carry `{ message, channelId, queue, exchange }`,
 and `'DELIVERY TAG NOT FOUND ...'` errors add `messageId`; none carries the `Channel` or the
 connection URL.
+
+`'Message is null'` is the broker cancelling a consumer, for example by deleting its queue. The
+channel closes its amqplib channel (already closed is fine), re-creates it and consumes again.
 
 ## Graceful Shutdown
 

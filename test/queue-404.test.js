@@ -105,7 +105,8 @@ test('one create holding the expected 404 and a refused bind: only the bind is a
   await settle();
   assert.ok(errors.length >= 1, 'the refused bind reached error');
   assert.ok(errors.every(e => e?.message !== 'queue not found, declaring it'));
-  assert.strictEqual(errors.filter(e => e?.code === 404).length, 1, 'the check 404 is not one');
+  // one 404 per failed create: the create's own 'cant establish a channel', not the check's
+  assert.strictEqual(errors.filter(e => e?.err?.code === 404).length, errors.length);
 });
 
 test('a check that fails with another code is an error', async () => {
@@ -118,7 +119,7 @@ test('a check that fails with another code is an error', async () => {
   });
   channel.create();
   await settle();
-  assert.ok(errors.some(e => e?.code === 403));
+  assert.ok(errors.some(e => e?.message === 'cant establish a channel' && e.err?.code === 403));
 });
 
 // ---- live broker: no queue created beforehand
