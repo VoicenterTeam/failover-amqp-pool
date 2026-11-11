@@ -173,7 +173,7 @@ class AMQPPool extends EventEmitter {
     let at = 0;
     while (at < end && !this.#stopped) {
       const tried = cache[at++];
-      const { keep } = this.#attempt(tried, pass, notes);
+      const keep = this.#attempt(tried, pass, notes);
       for (const entry of keep) kept.push({ entry, added: entry !== tried });
     }
     // past `at`: any entries a stop() kept the pass from, then any a listener cached during it.
@@ -243,7 +243,7 @@ class AMQPPool extends EventEmitter {
   publish(msg, filter, topic, props) {
     this.#assertRunning();
     const notes = [];
-    const { keep } = this.#attempt({ msg, filter, topic, props }, null, notes);
+    const keep = this.#attempt({ msg, filter, topic, props }, null, notes);
     // with nobody listening, the 'error' throws to the caller, as it always did, and nothing is
     // cached: a caller that publishes again then sends the message once
     if (this.listenerCount('error') === 0 && notes.some(([event]) => event === 'error')) {
@@ -254,9 +254,9 @@ class AMQPPool extends EventEmitter {
   }
 
   // Sends one message where its filter points. Returns what stays cached in its place (nothing,
-  // the entry itself, or for an 'all' publish one entry per failed channel), whether a channel
-  // took it, and adds to `notes` the events to emit once the cache holds that result. `pass` is
-  // the retry tick's, and null for a publish() call.
+  // the entry itself, or for an 'all' publish one entry per failed channel), and adds to `notes`
+  // the events to emit once the cache holds that result. `pass` is the retry tick's, and null
+  // for a publish() call.
   #attempt(entry, pass, notes) {
     const { filter, props } = entry;
     const channels = this.getAliveChannels();
@@ -270,13 +270,13 @@ class AMQPPool extends EventEmitter {
         if (!pass) throw e;
         const info = { message: 'cached message dropped', messageId: props?.messageId };
         notes.push(['error', e], ['info', { ...info, reason: 'filter threw' }]);
-        return { keep: [], sent: false };
+        return [];
       }
-      if (!targets) return { keep: [entry], sent: false };
+      if (!targets) return [entry];
       if (targets instanceof Channel) targets = [targets];
       return this.#send(entry, targets, !retryFilters.has(filter), pass, notes);
     }
-    if (channels.length === 0) return { keep: [entry], sent: false };
+    if (channels.length === 0) return [entry];
     if (filter === 'rr') {
       if (this.rr_i >= channels.length) this.rr_i = 0;
       return this.#send(entry, [channels[this.rr_i++]], false, pass, notes);
@@ -284,14 +284,11 @@ class AMQPPool extends EventEmitter {
     if (filter !== 'all') return this.#send(entry, [channels[0]], true, pass, notes);
     // each channel that fails keeps an entry of its own, with a filter that reaches it only
     const keep = [];
-    let sent = false;
     for (const channel of channels) {
       const only = { ...entry, filter: this.#onlyChannel(channel, props) };
-      const result = this.#send(only, [channel], false, pass, notes);
-      keep.push(...result.keep);
-      sent ||= result.sent;
+      keep.push(...this.#send(only, [channel], false, pass, notes));
     }
-    return { keep, sent };
+    return keep;
   }
 
   // Publishes on each target this entry is not done with. The entry stays cached, once, while a
@@ -303,7 +300,6 @@ class AMQPPool extends EventEmitter {
   #send(entry, targets, report, pass, notes) {
     const done = this.#done.get(entry);
     const doneNow = [];
-    let sent = false;
     let owed = false;
     for (const key in targets) {
       const channel = targets[key];
@@ -324,7 +320,6 @@ class AMQPPool extends EventEmitter {
       try {
         channel.publish(entry.msg, entry.topic, entry.props);
         doneNow.push(channel);
-        sent = true;
       } catch (e) {
         const refused = e instanceof RangeError;
         if (refused || (report && !pass?.reported)) notes.push(['error', e]);
@@ -335,9 +330,9 @@ class AMQPPool extends EventEmitter {
         if (report) pass.reported = true;
       }
     }
-    if (!owed) return { keep: [], sent };
+    if (!owed) return [];
     if (doneNow.length > 0) this.#done.set(entry, new Set([...(done || []), ...doneNow]));
-    return { keep: [entry], sent };
+    return [entry];
   }
 
   #notify(notes) {
