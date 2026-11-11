@@ -1,7 +1,8 @@
 // #79 on a live broker: the management API closes the connection while a Channel publishes. Each
 // message publish() accepted is then in the queue, or was handed back by 'unconfirmed'; none is
 // handed back twice, and none the broker confirmed before the close is handed back. Needs
-// FAMQP_TEST_URL and FAMQP_TEST_MGMT_URL.
+// FAMQP_TEST_URL and FAMQP_TEST_MGMT_URL. The Channel's own close() and a channel error need
+// only FAMQP_TEST_URL.
 const { test } = require('node:test');
 const assert = require('node:assert');
 const os = require('node:os');
@@ -41,11 +42,8 @@ async function removeExchange(exchange) {
   }
 }
 
-// A Channel publishes BATCH messages per turn; at turn BEFORE it waits for every confirm so far,
-// then asks the management API to close its connection and goes on publishing until publish()
-// throws. Returns the ids publish() accepted, those confirmed before the close, those queued and
-// those handed back.
-async function bounceMidPublish(t, label) {
+// A ready Channel on its own Connection, with its exchange and a bound queue; removed after t
+async function liveChannel(t, label) {
   const name = `r2-f-${label}-${process.pid}`;
   const conn = new Connection(URL_, { connection_name: name, reconnectInterval: 600000 });
   conn.on('error', () => {});
@@ -58,6 +56,15 @@ async function bounceMidPublish(t, label) {
   const up = new Promise(resolve => channel.once('ready', resolve));
   conn.start();
   await up;
+  return { name, conn, channel };
+}
+
+// A Channel publishes BATCH messages per turn; at turn BEFORE it waits for every confirm so far,
+// then asks the management API to close its connection and goes on publishing until publish()
+// throws. Returns the ids publish() accepted, those confirmed before the close, those queued and
+// those handed back.
+async function bounceMidPublish(t, label) {
+  const { name, conn, channel } = await liveChannel(t, label);
   const broker = await connectionNamed(`${name}_${os.hostname}`);
   const back = [];
   channel.on('unconfirmed', entries => back.push(...entries.map(e => e.props.messageId)));
@@ -104,4 +111,29 @@ test('live: a message confirmed before the close is not handed back',
     const handedBack = new Set(back);
     assert.strictEqual(confirmed.length, BEFORE * BATCH);
     assert.deepStrictEqual(confirmed.filter(id => handedBack.has(id)), []);
+  });
+
+test('live: close() with confirms pending hands nothing back, and the broker has every message',
+  { skip: !URL_ && 'FAMQP_TEST_URL not set', timeout: 60000 }, async t => {
+    const { name, channel } = await liveChannel(t, 'own');
+    const back = [];
+    channel.on('unconfirmed', entries => back.push(...entries));
+    const ids = Array.from({ length: BEFORE * BATCH }, (_, i) => `own.${i}`);
+    for (const messageId of ids) channel.publish({ messageId }, 'k', { messageId });
+    await channel.close();
+    await new Promise(resolve => process.nextTick(resolve));
+    const queued = await drain(`${name}.q`);
+    assert.deepStrictEqual({ back: back.length, queued: queued.length },
+      { back: 0, queued: ids.length });
+  });
+
+test('live: a publish the broker refuses with a channel error comes back with its cause',
+  { skip: !URL_ && 'FAMQP_TEST_URL not set', timeout: 60000 }, async t => {
+    const { name, channel } = await liveChannel(t, 'cause');
+    const back = new Promise(resolve => channel.once('unconfirmed', resolve));
+    channel.publish({ n: 1 }, 'k', { messageId: 'refused', exchange: `${name}.missing` });
+    const [entry] = await back;
+    assert.deepStrictEqual([entry.props.messageId, entry.reason, entry.cause.code],
+      ['refused', 'closed', 404]);
+    await drain(`${name}.q`);
   });

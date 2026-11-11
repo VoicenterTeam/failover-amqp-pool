@@ -28,6 +28,8 @@ class Channel extends EventEmitter {
   #connectionFailure = null;   // the broker's connection close that failed a create in flight
   // amqplib channel -> the messages published on it that the broker has not confirmed (#79)
   #unconfirmed = new WeakMap();
+  // amqplib channels this Channel closed itself: their unconfirmed messages are not handed back
+  #closedByChannel = new WeakSet();
   constructor(connection, channelConfig) {
     super();
     this.hash = hash(channelConfig)
@@ -151,6 +153,7 @@ class Channel extends EventEmitter {
     if(wasAlive) this.emit('info', {message: `Channel closed`, id: this._id})
     // a create in flight has its amqplib channel too: it must not outlive the close
     if(!this.amqpChannel || !(wasAlive || this.#isConnecting)) return Promise.resolve(true);
+    this.#closedByChannel.add(this.amqpChannel);
     try {
       return Promise.resolve(this.amqpChannel.close()).then(() => true, () => false);
     } catch (error) {
@@ -298,6 +301,7 @@ class Channel extends EventEmitter {
           // close() closed the amqplib channel: no 'ready', no retry (create() refuses it)
           if (this.#closed) return;
           if (!created) {
+            if (this.amqpChannel) this.#closedByChannel.add(this.amqpChannel);
             try { this.amqpChannel?.close()?.catch?.(() => {}); } catch (e) {}   // already closed
             // retry while the connection is up; a dead connection re-creates its channels on
             // reconnect. The wait doubles per consecutive failure, from reconnectInterval up to
@@ -334,10 +338,18 @@ class Channel extends EventEmitter {
   #trackConfirms(amqpChannel){
     const pending = new Set();
     this.#unconfirmed.set(amqpChannel, pending);
+    // amqplib emits a channel's own error (404, 406, ...) just before its 'close'; a connection
+    // that closes closes its channels with none
+    let failure = null;
+    amqpChannel.on('error', (err) => { failure = err; });
     amqpChannel.prependListener('close', () => {
       const entries = [...pending];
       pending.clear();
-      this.#handBack(entries, 'closed');
+      // a close this Channel asked for: the broker has every message published before it, and
+      // amqplib drops the acks that arrive while its channel is closing
+      if (this.#closedByChannel.has(amqpChannel)) return;
+      this.#handBack(entries, 'closed',
+        failure && { code: failure.code, message: failure.message });
     });
   }
   // The confirm callback amqplib gets with the message: an ack forgets it, a nack hands it
@@ -356,11 +368,19 @@ class Channel extends EventEmitter {
     return result;
   }
   // On the next tick: a listener runs after amqplib and this Channel have handled the close or
-  // the confirm, and its throw cannot cut that handling short
-  #handBack(entries, reason){
+  // the confirm, and its throw cannot cut that handling short. The info says it happened even
+  // when nothing listens to 'unconfirmed'.
+  #handBack(entries, reason, cause = null){
     if (entries.length === 0) return;
-    const handed = entries.map(entry => ({ ...entry, reason }));
-    process.nextTick(() => this.emit('unconfirmed', handed));
+    const handed = entries.map(entry => ({ ...entry, reason, cause }));
+    const info = {
+      message: 'unconfirmed messages handed back', count: handed.length, reason, cause,
+      channelId: this._id
+    };
+    process.nextTick(() => {
+      this.emit('info', info);
+      this.emit('unconfirmed', handed);
+    });
   }
   #createQueue(queue, options){
       // the amqplib channel whose passive check is in flight: its 404 is the expected answer
@@ -473,6 +493,7 @@ class Channel extends EventEmitter {
             if (amqpChannel !== this.amqpChannel) return;
             // the broker cancelled the consumer: close what is left of the channel and re-create
             // it. A close() that rejects or throws means it is already closed, which is the aim.
+            this.#closedByChannel.add(amqpChannel);
             try { Promise.resolve(amqpChannel.close()).catch(() => {}); } catch (e) {}
             if (!this.#isConnecting) this.create();
             this.emit('error', {
