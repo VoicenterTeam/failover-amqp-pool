@@ -3,6 +3,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const api = require('@opentelemetry/api');
+const { execFileSync } = require('node:child_process');
+const path = require('node:path');
 const { MeterProvider, MetricReader } = require('@opentelemetry/sdk-metrics');
 const { watchPool } = require('../telemetry/metrics');
 const { startMetrics } = require('./helpers/otel');
@@ -54,6 +56,7 @@ const byServer = points => Object.fromEntries(points.map(p =>
 test('#83: after the last pool stops the cached gauge reads 0', async t => {
   const { points } = startMetrics(t);
   const unwatch = watchPool(reading('a.example', 1, 5));
+  t.after(unwatch);
   assert.deepStrictEqual((await points(CACHED)).map(p => p.value), [5]);
   unwatch();
   assert.deepStrictEqual((await points(CACHED)).map(p => p.value), [0]);
@@ -68,7 +71,7 @@ test('#83: a provider that never saw a pool observes no cached series', t => {
 });
 
 test('#85 item 1: a provider set again reads 0 for a server that stopped while it was away',
-  async () => {
+  async t => {
     const providers = ['X', 'Y'].map(() => {
       const reader = new Reader();
       return { provider: new MeterProvider({ readers: [reader] }), reader };
@@ -84,13 +87,16 @@ test('#85 item 1: a provider set again reads 0 for a server that stopped while i
     try {
       use(X);
       const stopA = watchPool(reading('a.example'));
+      t.after(stopA);
       assert.strictEqual(byServer(await points(X, CONNECTIONS))['a.example/down'], 1);
       use(Y);
       const stopB = watchPool(reading('b.example'));
+      t.after(stopB);
       stopA();
       await points(Y, CONNECTIONS);
       use(X);
       const stopC = watchPool(reading('c.example'));
+      t.after(stopC);
       const got = byServer(await points(X, CONNECTIONS));
       stopB();
       stopC();
@@ -104,6 +110,7 @@ test('#85 item 1: a provider set again reads 0 for a server that stopped while i
 test('#85 item 2: after stop() each collection observes each count series once', t => {
   const collect = stubMetrics(t);
   const unwatch = watchPool(reading('a.example', 2));
+  t.after(unwatch);
   const counted = calls => calls.filter(c => c.name === CONNECTIONS || c.name === CHANNELS);
   assert.strictEqual(counted(collect()).length, 4, 'running');
   unwatch();
@@ -115,12 +122,15 @@ test('#85 item 3: a pool whose read() throws reads 0, and the other pool is stil
   const collect = stubMetrics(t);
   let fail = false;
   const good = reading('b.example', 1, 2);
-  const flaky = () => { if (fail) throw new Error('read failed'); return reading('a.example')(); };
+  const flaky = () => {
+    if (fail) throw new Error('read failed');
+    return reading('a.example', 1, 3)();
+  };
   // first in the set, so its throw comes before the good read
   const unwatchFlaky = watchPool(flaky);
   const unwatchGood = watchPool(good);
   t.after(() => { unwatchFlaky(); unwatchGood(); });
-  collect();
+  assert.deepStrictEqual(named(collect(), CACHED).map(c => c.value), [5], 'both read');
   fail = true;
   const calls = collect();
   const series = Object.fromEntries(named(calls, CONNECTIONS)
@@ -128,4 +138,38 @@ test('#85 item 3: a pool whose read() throws reads 0, and the other pool is stil
   assert.deepStrictEqual(series,
     { 'a.example/alive': 0, 'a.example/down': 0, 'b.example/alive': 0, 'b.example/down': 1 });
   assert.deepStrictEqual(named(calls, CACHED).map(c => c.value), [2]);
+});
+
+// The record is keyed weakly: a provider replaced by another is not held alive by it. gc() needs
+// --expose-gc, so the probe runs in a child process; it prints whether the provider was collected.
+const GC_PROBE = `
+  const api = require('@opentelemetry/api');
+  const { MeterProvider, MetricReader } = require('@opentelemetry/sdk-metrics');
+  const { watchPool } = require(${JSON.stringify(path.join(__dirname, '../telemetry/metrics'))});
+  class Reader extends MetricReader { async onForceFlush() {} async onShutdown() {} }
+  const reading = () => ({ connections: [{ url: 'amqp://a.example', alive: true }],
+    channels: [], cached: 3 });
+  (async () => {
+    let ref;
+    await (async () => {
+      const reader = new Reader();
+      const x = new MeterProvider({ readers: [reader] });
+      api.metrics.setGlobalMeterProvider(x);
+      const stop = watchPool(reading);
+      await reader.collect();
+      stop();
+      ref = new WeakRef(x);
+      api.metrics.disable();
+    })();
+    api.metrics.setGlobalMeterProvider(new MeterProvider({ readers: [new Reader()] }));
+    watchPool(reading)();
+    for (let i = 0; i < 5; i++) { await new Promise(setImmediate); global.gc(); }
+    console.log(JSON.stringify({ collected: ref.deref() === undefined }));
+  })();
+`;
+
+test('#85 item 1: a provider replaced by another can be garbage-collected', () => {
+  const out = execFileSync(process.execPath, ['--expose-gc', '-e', GC_PROBE],
+    { cwd: path.join(__dirname, '..') }).toString();
+  assert.deepStrictEqual(JSON.parse(out), { collected: true });
 });
