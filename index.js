@@ -5,6 +5,26 @@ const { watchPool } = require('./telemetry/metrics');
 // Filters built by #onlyChannel: their failed retries stay silent, as an 'all' publish is.
 const retryFilters = new WeakSet();
 
+// A process warning for a value nobody else will hear, which must not throw itself.
+// emitWarning throws on a value that is neither a string nor an Error, and String() throws
+// on an object with no prototype or a toString that throws
+// (instanceof runs a Proxy's getPrototypeOf trap, and emitWarning reads an Error's name).
+// Node prints an Error's warning a tick later, outside this try, reading its code, detail,
+// stack and toString: it gets a copy made of strings read here instead.
+function warn(value) {
+  try {
+    if (!(value instanceof Error)) return process.emitWarning(String(value));
+    const copy = new Error(String(value.message));
+    copy.name = String(value.name);
+    const { code, stack } = value;
+    if (code) copy.code = String(code);
+    if (typeof stack === 'string') copy.stack = stack;
+    process.emitWarning(copy);
+  } catch {
+    process.emitWarning('unprintable value');
+  }
+}
+
 function build(pool, parsedConfig){
   let url = _buildUrl(pool.connection);
   parsedConfig[url] = (pool.hasOwnProperty(url)) ? parsedConfig[url] : {};
@@ -72,24 +92,6 @@ class AMQPPool extends EventEmitter {
   // app hears the one log. Nothing here may reject: a failure nobody hears, and a listener that
   // throws, become process warnings.
   #onSigint = async () => {
-    // emitWarning throws on a value that is neither a string nor an Error, and String() throws
-    // on an object with no prototype or a toString that throws
-    // (instanceof runs a Proxy's getPrototypeOf trap, and emitWarning reads an Error's name).
-    // Node prints an Error's warning a tick later, outside this try, reading its code, detail,
-    // stack and toString: it gets a copy made of strings read here instead.
-    const warn = (value) => {
-      try {
-        if (!(value instanceof Error)) return process.emitWarning(String(value));
-        const copy = new Error(String(value.message));
-        copy.name = String(value.name);
-        const { code, stack } = value;
-        if (code) copy.code = String(code);
-        if (typeof stack === 'string') copy.stack = stack;
-        process.emitWarning(copy);
-      } catch {
-        process.emitWarning('unprintable value');
-      }
-    };
     let failed = false;
     let failure;
     try {
