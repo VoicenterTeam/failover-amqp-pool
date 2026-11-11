@@ -44,7 +44,16 @@ async function livePool(t, channelConf, user) {
   await own(t, () => admin.close().catch(() => {}));
   const adminCh = await admin.createChannel();
   adminCh.on('error', () => {});
-  await adminCh.assertExchange(exchange, 'fanout', { durable: false });
+  // owned before the declare, on a fresh channel: a refused call closes adminCh
+  const dropExchange = async () => {
+    const c = await admin.createChannel().catch(() => null);
+    if (!c) return; // the admin connection is gone
+    c.on('error', () => {});
+    await c.deleteExchange(exchange).catch(() => {});
+    await c.close().catch(() => {});
+  };
+  const declare = () => adminCh.assertExchange(exchange, 'fanout', { durable: false });
+  await acquireOwned(t, declare, dropExchange);
   const queues = [];
   const pool = new AMQPPool([
     {
