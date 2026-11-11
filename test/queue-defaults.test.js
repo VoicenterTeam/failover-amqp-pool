@@ -5,6 +5,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const os = require('node:os');
+const { EventEmitter } = require('node:events');
 const Channel = require('../Channel');
 const { FakeAmqpChannel } = require('./helpers/fakes');
 const { MGMT, mgmt, until, queuePath, queueInfo, connectionNamed, closeConnection } =
@@ -281,7 +282,9 @@ async function livePool(t, channelConf, queueNames = []) {
       ...channelConf },
   }]);
   const errors = [];
-  pool.on('error', e => errors.push(e));
+  const events = [];   // the pool's 'error' and 'info' events in order, for a row that gives up
+  pool.on('error', e => { errors.push(e); events.push(['error', e]); });
+  pool.on('info', i => events.push(['info', i]));
   t.after(async () => {
     const stopped = pool.stop();
     pool.on('error', () => {});
@@ -291,21 +294,54 @@ async function livePool(t, channelConf, queueNames = []) {
     await admin.close().catch(() => {});
   });
   const connectionName = `${connection_name}_${os.hostname}`;
-  return { pool, admin, adminCh, exchange, errors, queueNames, connectionName };
+  return { pool, admin, adminCh, exchange, errors, events, queueNames, connectionName };
 }
 
 // resolves with the first matching event; a run that never gets it fails with the event named
-function waitEvent(emitter, event, test = () => true) {
+function waitEvent(emitter, event, test = () => true, polls = 90) {
   let got;
   const f = arg => { if (got === undefined && test(arg)) got = arg ?? true; };
   emitter.on(event, f);
-  const found = until(() => got, `'${event}'`, 90).finally(() => emitter.off(event, f));
+  const found = until(() => got, `'${event}'`, polls).finally(() => emitter.off(event, f));
   found.catch(() => {});   // the awaiting line reports it; this one is not an unhandled rejection
   return found;
 }
 const readyChannel = pool => waitEvent(pool, 'ready');
 const recreatedChannel = pool => waitEvent(pool, 'recreated');
 const consuming = ch => waitEvent(ch, 'info', i => i?.message?.startsWith?.('consume from queue'));
+
+// #78: a wait that, giving up, carries the pool's 'error' and 'info' events in its error's
+// `events` field, and names them in its message for the run's log.
+async function orEvents(waiting, events) {
+  try {
+    return await waiting;
+  } catch (e) {
+    e.events = events.slice();
+    const seen = events.map(([name, arg]) => `${name} ${arg?.message ?? arg}`);
+    e.message += `; the pool's events: ${seen.join(' | ') || 'none'}`;
+    throw e;
+  }
+}
+// 'ready' within `polls` polls of 100 ms
+const readyOrEvents = (pool, events, polls) =>
+  orEvents(waitEvent(pool, 'ready', undefined, polls), events);
+
+test('#78 a wait for ready that gives up carries the pool events it saw', async () => {
+  const events = [['info', { message: 'Connection created' }], ['error', new Error('boom')]];
+  const gaveUp = await readyOrEvents(new EventEmitter(), events, 1).catch(e => e);
+  assert.deepStrictEqual(gaveUp.events, events);
+});
+
+// The quorum rows' window (#78). Declare-to-ready, measured on 3.13.7 and 4.3.7 with
+// `node test/helpers/quorum-ready-time.js <amqp url> <runs>`, n=20 alone and n=30 while
+// `npm test` ran with both URLs on the same broker: p99 146 / 133 ms alone, 171 / 242 ms loaded.
+// The latency alone asks for a second or so. The one recorded timeout waited over 9 s, 37 times
+// the worst p99, so latency does not explain it, and the window is a floor set above that one
+// failure: 50 times the worst p99, the round margin above 37, 12.1 s, 121 polls of 100 ms. A
+// give-up names the pool's events (above), which is what tells the next failure's cause.
+const QUORUM_READY_POLLS = 121;
+// a row with two such waits, plus 10 s for its own steps and cleanup
+const QUORUM_ROW_TIMEOUT = 2 * QUORUM_READY_POLLS * 100 + 10000;
 
 test('live: a named queue that does not exist is declared durable, with no consumer timeout',
   { skip: skipLive }, async t => {
@@ -335,12 +371,12 @@ test('live: a dynamic queue that does not exist is declared exclusive, transient
 });
 
 test('live: a quorum queue that does not exist is declared durable, x-consumer-timeout 7200000',
-  { skip: skipLive }, async t => {
+  { skip: skipLive, timeout: QUORUM_ROW_TIMEOUT }, async t => {
   const name = unique('quorum');
-  const { pool } = await livePool(t,
+  const { pool, events } = await livePool(t,
     { prefetch: 5, queue: { name, options: { arguments: { 'x-queue-type': 'quorum' } } } },
     [name]);
-  await readyChannel(pool);
+  await readyOrEvents(pool, events, QUORUM_READY_POLLS);
   const info = await queueInfo(name);
   assert.strictEqual(info.type, 'quorum');
   assert.strictEqual(info.durable, true);
@@ -349,13 +385,14 @@ test('live: a quorum queue that does not exist is declared durable, x-consumer-t
 });
 
 test('live: a dynamic quorum queue is declared from nothing, durable, and consumes',
-  { skip: skipLive }, async t => {
+  { skip: skipLive, timeout: QUORUM_ROW_TIMEOUT }, async t => {
   const conf = { prefetch: 5, queue: { options: { arguments: { 'x-queue-type': 'quorum' } } } };
-  const { pool, adminCh, exchange } = await livePool(t, conf);
-  const ch = await readyChannel(pool);
+  const { pool, adminCh, exchange, events } = await livePool(t, conf);
+  const ch = await readyOrEvents(pool, events, QUORUM_READY_POLLS);
   const bodies = [];
   ch.on('message', m => { bodies.push(m.content.toString()); ch.ack(m); });
-  const done = consuming(ch);
+  const isConsume = i => i?.message?.startsWith?.('consume from queue');
+  const done = orEvents(waitEvent(ch, 'info', isConsume, QUORUM_READY_POLLS), events);
   ch.consume();
   await done;
   t.after(() => mgmt('DELETE', queuePath(ch.queue.name)));

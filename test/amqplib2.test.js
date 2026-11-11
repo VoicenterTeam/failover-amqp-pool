@@ -20,7 +20,9 @@ test('heartbeat 0 or unset leaves heartbeat out of the URL; a positive number is
   for (const [heartbeat, query] of [[0, ''], ['0', ''], ['0.5', ''], ['abc', ''], ['', ''], [-5, ''],
     [undefined, ''], [null, ''], [25, '?heartbeat=25'], ['25', '?heartbeat=25']]) {
     const { pool } = offlinePool(t, { heartbeat });
-    assert.strictEqual(pool.connections[0].url, `amqp://127.0.0.1:5672${query}`, `heartbeat ${heartbeat}`);
+    const url = pool.connections[0].url;
+    await pool.stop();   // one pool, so one SIGINT listener, at a time (#44)
+    assert.strictEqual(url, `amqp://127.0.0.1:5672${query}`, `heartbeat ${heartbeat}`);
   }
 });
 

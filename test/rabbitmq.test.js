@@ -4,9 +4,11 @@ const { test, after } = require('node:test');
 const assert = require('node:assert');
 const amqplib = require('amqplib');
 const AMQPPool = require('..');
+const { leftovers } = require('./helpers/leak-guard');
 
 const URL_ = process.env.FAMQP_TEST_URL;
 const skip = URL_ ? false : 'FAMQP_TEST_URL not set';
+const STARTED = Date.now();   // names this run declares carry -<pid>-<ms>, ms from here on
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
 async function until(cond, ms = 5000) {
@@ -281,11 +283,13 @@ async function mgmt(method, path, body) {
   return method === 'GET' ? res.json() : undefined;
 }
 
-// a pool for one user that records every event; returns the recorded events and helpers
-async function credentialPool(t, username, password) {
+// a pool for one user that records every event; returns the recorded events and helpers.
+// The user's DELETE hook registers as soon as the user exists, before a step that can throw.
+async function credentialPool(t, username, password, vhost = '/') {
   await mgmt('PUT', `users/${encodeURIComponent(username)}`, { password, tags: '' });
-  await mgmt('PUT', `permissions/%2F/${encodeURIComponent(username)}`, { configure: '.*', write: '.*', read: '.*' });
   t.after(() => mgmt('DELETE', `users/${encodeURIComponent(username)}`));
+  const grant = `permissions/${encodeURIComponent(vhost)}/${encodeURIComponent(username)}`;
+  await mgmt('PUT', grant, { configure: '.*', write: '.*', read: '.*' });
   const u = new URL(URL_);
   const pool = new AMQPPool([{
     connection: { host: u.hostname, port: Number(u.port), username, password, ssl: false, reconnectInterval: 50 },
@@ -330,6 +334,24 @@ test('issue #9: a non-ASCII password is refused (amqplib limit) and is not emitt
   await until(() => events.some(([n, [a]]) => n === 'error' && /ACCESS_REFUSED|PLAIN login refused/i.test(String(a?.error?.message))));
   assertNoSecret();
 });
+
+// #60: a permissions PUT that fails (here on a vhost that does not exist) leaves no user
+test('#60 a failing permissions PUT in credentialPool leaves no user on the broker',
+  { skip: skipMgmt }, async t => {
+    const username = `famqp-i60-${process.pid}-${Date.now()}`;
+    const user = `users/${encodeURIComponent(username)}`;
+    t.after(() => mgmt('DELETE', user));   // only if this row fails before the hooks below run
+    const hooks = [];
+    const scope = { after: hook => hooks.push(hook) };
+    const missing = `famqp-i60-missing-${process.pid}`;
+    // the hooks run however the call ends: a PUT that succeeds leaves a pool to stop
+    try {
+      await assert.rejects(credentialPool(scope, username, 'pw', missing), /^Error: PUT perm/);
+    } finally {
+      for (const hook of hooks.reverse()) await hook();
+    }
+    await assert.rejects(mgmt('GET', user), { message: `GET ${user}: 404` });
+  });
 
 // issue #9 review: vhost names with URL syntax characters reach the right vhost
 test('issue #9: vhosts with URL syntax characters, and the default vhost, connect', { skip: skipMgmt, timeout: 60000 }, async t => {
@@ -411,14 +433,25 @@ test('issue #31: stop() after a broker-side close resolves, rejects nothing, con
   });
 
 // issue #49: nothing this process declared may outlive the file. Only with the management API.
+const runLeftovers = () =>
+  leftovers(path => mgmt('GET', path), { pid: process.pid, since: STARTED });
+
+// #65: the guard sees a queue this run leaves on the live broker, and stops seeing it once gone
+test('#65 the leak guard reports a queue this run left, and not after it is deleted',
+  { skip: skipMgmt }, async t => {
+    const queue = `famqp-i65-${process.pid}-${Date.now()}`;
+    const admin = await amqplib.connect(URL_);
+    t.after(() => admin.close().catch(() => {}));
+    const ch = await admin.createChannel();
+    // durable: RabbitMQ 4 refuses a transient queue that is not exclusive
+    await ch.assertQueue(queue, { durable: true, arguments: { 'x-expires': 600000 } });
+    t.after(() => mgmt('DELETE', `queues/%2F/${encodeURIComponent(queue)}`));
+    assert.deepStrictEqual(await runLeftovers(), [`queues:${queue}`]);
+    await ch.deleteQueue(queue);
+    assert.deepStrictEqual(await runLeftovers(), []);
+  });
+
 after(async () => {
   if (!MGMT || !URL_) return;
-  const mine = `-${process.pid}-`;
-  const left = [];
-  for (const kind of ['queues', 'exchanges']) {
-    for (const x of (await mgmt('GET', `${kind}/%2F?columns=name&page=1&page_size=500`)).items) {
-      if (x.name.startsWith('famqp-') && x.name.includes(mine)) left.push(`${kind}:${x.name}`);
-    }
-  }
-  assert.deepStrictEqual(left, []);
+  assert.deepStrictEqual(await runLeftovers(), []);
 });
