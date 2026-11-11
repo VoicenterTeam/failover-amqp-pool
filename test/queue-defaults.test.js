@@ -71,7 +71,7 @@ test('#53 a named queue with no options at all is declared durable', async () =>
   assert.strictEqual(fake().asserted.options.durable, true);
 });
 
-test('#53 the queue a channel names for itself is exclusive and transient by default', async () => {
+test('#53 the queue a channel names for itself is exclusive and transient', async () => {
   const options = await declaredDynamic({});
   assert.strictEqual(options.exclusive, true);
   assert.strictEqual(options.durable, false);
@@ -122,7 +122,7 @@ test('#53 a re-create declares the dynamic queue again, exclusive, bound, consum
   assert.strictEqual(name, `${channel._id}:${os.hostname}`);
   const before = amqp.length;
   const done = created(channel);
-  fake().close();    // the connection went: its exclusive queue went with it, so the check is a 404
+  fake().close();    // the connection went, its exclusive queue with it: the check is a 404
   channel.alive;     // the next use re-creates the channel
   await done;
   const now = fake();
@@ -141,7 +141,7 @@ test('#54 a classic queue gets no default arguments', async () => {
   assert.strictEqual(options.arguments, undefined);
 });
 
-test('#54 a quorum queue gets x-consumer-timeout 7200000 beside the caller arguments', async () => {
+test('#54 a quorum queue gets x-consumer-timeout 7200000 next to the caller args', async () => {
   const args = { 'x-queue-type': 'quorum', 'x-max-length': 10 };
   const options = await declaredNamed({ arguments: args });
   assert.deepStrictEqual(options.arguments,
@@ -236,7 +236,7 @@ test('live: a named queue that does not exist is declared durable, with no consu
   assert.strictEqual(info.arguments['x-message-ttl'], 3600000);
 });
 
-test('live: a dynamic queue that does not exist is declared exclusive and transient with x-expires',
+test('live: a dynamic queue that does not exist is declared exclusive, transient, x-expires',
   { skip: skipLive }, async t => {
   const { pool } = await livePool(t, { prefetch: 5 });
   const ch = await readyChannel(pool);
@@ -251,11 +251,12 @@ test('live: a dynamic queue that does not exist is declared exclusive and transi
   assert.strictEqual(info.arguments['x-consumer-timeout'], undefined);
 });
 
-test('live: a quorum queue that does not exist is declared durable with x-consumer-timeout 7200000',
+test('live: a quorum queue that does not exist is declared durable, x-consumer-timeout 7200000',
   { skip: skipLive }, async t => {
   const name = unique('quorum');
   const { pool } = await livePool(t,
-    { prefetch: 5, queue: { name, options: { arguments: { 'x-queue-type': 'quorum' } } } }, [name]);
+    { prefetch: 5, queue: { name, options: { arguments: { 'x-queue-type': 'quorum' } } } },
+    [name]);
   await readyChannel(pool);
   const info = await queueInfo(name);
   assert.strictEqual(info.type, 'quorum');

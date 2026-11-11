@@ -83,7 +83,8 @@ class Channel extends EventEmitter {
     }
   }
   // The caller's arguments as they are. A quorum queue also gets the consumer timeout, unless the
-  // caller set one: a classic queue takes the broker's own (consumer_timeout on 3.13, none on 4.3).
+  // caller set one: a classic queue takes the broker's own (consumer_timeout on 3.13, none on
+  // 4.3).
   #queueArguments(given){
     const quorum = given?.['x-queue-type'] === 'quorum';
     if(!quorum || given['x-consumer-timeout'] !== undefined) return given || undefined;

@@ -260,7 +260,8 @@ test('live: a dynamic queue carries x-expires 1800000 on the broker',
       password: decodeURIComponent(u.password), ssl: false, reconnectInterval: 50 },
     channel: { prefetch: 5, exchange: { name: exchange, type: 'fanout' },
       binding: { enabled: true, options: [{ x: 1 }, { y: 2 }] },
-      queue: { options: { durable: true, exclusive: false, autoDelete: false, messageTtl: 60000 } } },
+      queue: { options: { durable: true, exclusive: false, autoDelete: false,
+        messageTtl: 60000 } } },
   }]);
   let dynamicName;
   const consuming = new Promise(resolve => pool.on('ready', ch => {

@@ -118,8 +118,9 @@ declare namespace AMQPPool {
         /** Queue: default true, false for a queue the channel names itself (no queue name). */
         durable?: boolean,
         /**
-         * Queue arguments, passed to the broker as given. A quorum queue ('x-queue-type': 'quorum')
-         * also gets 'x-consumer-timeout': 7200000 unless set; a classic queue gets no default.
+         * Queue arguments, passed to the broker as given. A quorum queue
+         * ('x-queue-type': 'quorum') also gets 'x-consumer-timeout': 7200000 unless set;
+         * a classic queue gets no default.
          */
         arguments?: any,
         /** Queue expiry in ms. 'none' is for dynamic queues only (a named queue is refused). */
