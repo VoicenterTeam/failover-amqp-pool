@@ -117,9 +117,8 @@ test('stop() of a pool on the live broker removes its SIGINT listener',
     assert.strictEqual(count(), before);
   });
 
-// The handler calls stop(this.callback), but stop() is async and ignores a callback, so the
-// handler's process.exit never runs today (recorded as a separate defect). This row pins what
-// SIGINT does now: it stops the pool. The child exits 7 once the pool has no connections.
+// SIGINT stops the pool and the app owns the exit (see sigint-log.test.js). This row pins that
+// the pool stops: the child exits 7 itself once the pool has no connections.
 test('SIGINT on a live pool still stops it', async () => {
   const root = path.resolve(__dirname, '..');
   const script = `
