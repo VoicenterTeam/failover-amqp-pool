@@ -346,8 +346,8 @@ test('#78 a wait for ready that gives up carries the pool events it saw', async 
 // margin above 37, 12.1 s, 121 polls of 100 ms, 2.6 times the 4.7 s row. A give-up names the
 // pool's events (above), which is what tells the next failure's cause.
 const QUORUM_READY_POLLS = 121;
-// a row with two such waits, plus 10 s for its own steps and cleanup
-const QUORUM_ROW_TIMEOUT = 2 * QUORUM_READY_POLLS * 100 + 10000;
+// a row with `waits` such waits, plus 10 s for its own steps and cleanup
+const quorumRowTimeout = waits => waits * QUORUM_READY_POLLS * 100 + 10000;
 
 test('live: a named queue that does not exist is declared durable, with no consumer timeout',
   { skip: skipLive }, async t => {
@@ -377,7 +377,7 @@ test('live: a dynamic queue that does not exist is declared exclusive, transient
 });
 
 test('live: a quorum queue that does not exist is declared durable, x-consumer-timeout 7200000',
-  { skip: skipLive, timeout: QUORUM_ROW_TIMEOUT }, async t => {
+  { skip: skipLive, timeout: quorumRowTimeout(1) }, async t => {
   const name = unique('quorum');
   const { pool, events } = await livePool(t,
     { prefetch: 5, queue: { name, options: { arguments: { 'x-queue-type': 'quorum' } } } },
@@ -391,7 +391,7 @@ test('live: a quorum queue that does not exist is declared durable, x-consumer-t
 });
 
 test('live: a dynamic quorum queue is declared from nothing, durable, and consumes',
-  { skip: skipLive, timeout: QUORUM_ROW_TIMEOUT }, async t => {
+  { skip: skipLive, timeout: quorumRowTimeout(2) }, async t => {
   const conf = { prefetch: 5, queue: { options: { arguments: { 'x-queue-type': 'quorum' } } } };
   const { pool, adminCh, exchange, events } = await livePool(t, conf);
   const ch = await readyOrEvents(pool, events, QUORUM_READY_POLLS);
