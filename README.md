@@ -21,10 +21,10 @@ A robust AMQP client with connection pooling, automatic failover, and Winston tr
   `Channel` and `Connection` are in the `AMQPPool` namespace, `stop()` takes no callback and
   returns a promise, and `sendToQueue(queue, msg, options?)` is typed. See
   [TypeScript](#typescript).
-- `publish()` after `stop()` throws `Error('Pool is stopped')`, as `start()`, `addConnection()`,
-  `createConnection()` and `createChannel()` do. In 3.x it cached the message, sent nothing and
-  gave no signal. The pool stops itself on SIGINT, so an app that keeps publishing after Ctrl-C
-  or a process-manager stop must catch the throw.
+- `publish()` after `stop()` throws `Error('Pool is stopped')` with `code: 'POOL_STOPPED'`, as
+  `start()`, `addConnection()`, `createConnection()` and `createChannel()` do. In 3.x it cached
+  the message, sent nothing and gave no signal. The pool stops itself on SIGINT, so an app that
+  keeps publishing after Ctrl-C or a process-manager stop must catch the throw.
 - `winston-transport` is an optional peer dependency, needed only for the Winston transport.
   `nanoid` is no longer a dependency; nothing used it.
 
@@ -483,8 +483,17 @@ const logger = winston.createLogger({
 });
 ```
 
-Once the transport's pool has stopped (on SIGINT, or `transport.client.stop()`), each log line
-prints `Pool is stopped` to stderr with `console.error`, and is not sent.
+Once the transport's pool has stopped (on SIGINT, or `transport.client.stop()`), log lines are
+not sent. The first one gives one process warning (code `POOL_STOPPED`) and one `'warn'` event on
+the transport, with the pool's error; the rest are dropped silently. Each transport warns once.
+The `'warn'` event comes on the next tick, so a listener that throws raises an uncaught
+exception instead of throwing out of `log()`.
+Any other publish error is still printed with `console.error`. `log()` always calls back and
+never throws.
+
+`transport.close()` stops the transport's pool. Lines logged after it are dropped with no
+warning. winston-transport calls `close()` when the transport is unpiped, as `logger.close()`
+and `logger.remove(transport)` do.
 
 ## Events
 
@@ -625,6 +634,8 @@ emits nothing more: an error during teardown, or after `stop()`, is not heard by
 listener and does not throw.
 A stopped pool is final: `addConnection()`, `createConnection()`, `createChannel()`, `start()` and
 `publish()` throw `Error('Pool is stopped')` after `stop()`, and open, cache and send nothing.
+The error's `code` is `'POOL_STOPPED'`; match on it rather than on the message. In TypeScript the
+error is `AMQPPool.PoolStoppedError`.
 Build a new pool instead. The pool's own retry timer never calls `publish()` once stopped.
 
 On SIGINT the pool stops itself and logs one `'info'` event (`'Pool stopped on SIGINT'`), or an

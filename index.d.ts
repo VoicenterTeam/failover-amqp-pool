@@ -17,7 +17,10 @@ declare class AMQPPool extends EventEmitter {
 
     constructor(amqpConfigArray: Array<AMQPPool.AmqpConfig>);
 
-    /** Retries cached messages, one per tick (default every 2000 ms). */
+    /**
+     * Retries cached messages, one per tick (default every 2000 ms).
+     * @throws {AMQPPool.PoolStoppedError} after stop().
+     */
     start(msgCacheInterval?: number): void;
     /**
      * Stops the retry timer, removes the pool's SIGINT listener and the listeners it added to
@@ -27,10 +30,13 @@ declare class AMQPPool extends EventEmitter {
      * 'error'.) Takes no callback. Resolves, once each connection is closed and removed, with
      * one entry per connection: its position when stop() began.
      * A stopped pool is final: addConnection(), createConnection(), createChannel(), start() and
-     * publish() throw Error('Pool is stopped') after it.
+     * publish() throw a {@link AMQPPool.PoolStoppedError} after it.
      */
     stop(): Promise<number[]>;
-    /** Adds the connections and channels of a config array; returns the new channels' ids. */
+    /**
+     * Adds the connections and channels of a config array; returns the new channels' ids.
+     * @throws {AMQPPool.PoolStoppedError} after stop().
+     */
     addConnection(amqpConfigArray: Array<AMQPPool.AmqpConfig>): string[];
 
     /**
@@ -42,7 +48,7 @@ declare class AMQPPool extends EventEmitter {
      * that channel is gone (removed, or closed with close() and still listed) it is dropped, a
      * closed one with an 'info' event
      * { message: 'cached message dropped', messageId, channelId, reason }.
-     * Throws Error('Pool is stopped') after stop().
+     * @throws {AMQPPool.PoolStoppedError} after stop().
      */
     publish(
         msg: string | object,
@@ -99,12 +105,18 @@ declare class AMQPPool extends EventEmitter {
 
     /** The index as the string key of the connection, or false when there is no such url. */
     getConnectionIndexByUrl(url: string): string | false;
-    /** Returns the new connection's index. */
+    /**
+     * Returns the new connection's index.
+     * @throws {AMQPPool.PoolStoppedError} after stop().
+     */
     createConnection(
         url: string,
         connection: AMQPPool.ConnectionConf
     ): number;
-    /** Returns the new channel's id. */
+    /**
+     * Returns the new channel's id.
+     * @throws {AMQPPool.PoolStoppedError} after stop().
+     */
     createChannel(
         connectionIndex: number | string,
         channel: AMQPPool.ChannelConf
@@ -112,6 +124,14 @@ declare class AMQPPool extends EventEmitter {
 }
 
 declare namespace AMQPPool {
+
+    /**
+     * What addConnection(), createConnection(), createChannel(), start() and publish() throw
+     * after stop(): Error('Pool is stopped'). Match on `code`, not on the message.
+     */
+    interface PoolStoppedError extends Error {
+        readonly code: 'POOL_STOPPED';
+    }
 
     /** Every event name the pool emits with a typed payload. */
     type PoolEvent = 'ready' | 'recreated' | 'close' | 'channelMessage' | 'error' | 'info';

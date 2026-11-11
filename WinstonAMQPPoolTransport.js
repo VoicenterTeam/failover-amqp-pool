@@ -2,6 +2,11 @@ let Transport = require('winston-transport');
 let Pool = require('./index');
 
 class WinstonAMQPPoolTransport extends Transport {
+    // close() was called: the app asked for the stop, so lines drop with no warning
+    #closed = false;
+    // the stopped-pool warning went out; one per transport
+    #warned = false;
+
     constructor(opts) {
         super(opts);
         this.strategy = opts.strategy || 'all';
@@ -14,20 +19,32 @@ class WinstonAMQPPoolTransport extends Transport {
         this.client.start();
 
     }
+    // Never throws, and calls back on every path
     log(info, callback) {
-        let message;
-        if(this.useSymbol){
-            message = info[Symbol.for('message')];
-        }else{
-            message = JSON.stringify(info)
-        }
-            
         try {
-            this.client.publish(message, this.strategy, this.topic);
-        }catch (e) {
-            console.error(e)
+            if (!this.#closed) this.client.publish(this.#format(info), this.strategy, this.topic);
+        } catch (e) {
+            this.#failed(e);
         }
         callback();
+    }
+    // winston-transport calls it on unpipe, as logger.close() and logger.remove() do
+    close() {
+        this.#closed = true;
+        this.client.stop().catch(() => {});
+    }
+    #format(info) {
+        return this.useSymbol ? info[Symbol.for('message')] : JSON.stringify(info);
+    }
+    // A stopped pool warns once, then its lines drop; any other error is printed
+    #failed(e) {
+        if (e?.code !== 'POOL_STOPPED') return console.error(e);
+        if (this.#warned) return;
+        this.#warned = true;
+        process.emitWarning('the pool is stopped: WinstonAMQPPoolTransport drops log lines',
+            { code: 'POOL_STOPPED' });
+        // on the next tick, so a 'warn' listener that throws cannot throw out of log()
+        process.nextTick(() => this.emit('warn', e));
     }
 }
 
