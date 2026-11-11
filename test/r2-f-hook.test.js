@@ -70,18 +70,19 @@ async function readyPool(t, names = ['a'], { timers = ['setInterval'] } = {}) {
 const BOTH = { timers: ['setInterval', 'setTimeout'] };
 const drops = heard => heard.info.filter(e => e?.message === 'cached message dropped');
 
-test('an \'all\' message nacked on one channel is re-sent on that channel only', async t => {
-  const { pool, amqp } = await readyPool(t, ['a', 'b']);
-  pool.start(10);
-  pool.publish({ n: 1 }, 'all', undefined, { messageId: 'm-1' });
-  amqp(0).settle(new Error('message nacked'));
-  await tick();
-  assert.strictEqual(pool.msgCache.length, 1);
-  t.mock.timers.tick(10);
-  assert.deepStrictEqual(
-    [amqp(0).published.length, amqp(1).published.length, pool.msgCache.length], [2, 1, 0]);
-  assert.strictEqual(amqp(0).published[1].options.messageId, 'm-1');
-});
+test('an \'all\' message nacked on the second channel is re-sent on that channel only',
+  async t => {
+    const { pool, amqp } = await readyPool(t, ['a', 'b']);
+    pool.start(10);
+    pool.publish({ n: 1 }, 'all', undefined, { messageId: 'm-1' });
+    amqp(1).settle(new Error('message nacked'));
+    await tick();
+    assert.strictEqual(pool.msgCache.length, 1);
+    t.mock.timers.tick(10);
+    assert.deepStrictEqual(
+      [amqp(0).published.length, amqp(1).published.length, pool.msgCache.length], [1, 2, 0]);
+    assert.strictEqual(amqp(1).published[1].options.messageId, 'm-1');
+  });
 
 test('a channel the broker closes: its messages go out on its next amqplib channel, in order,'
   + ' in one tick', async t => {
