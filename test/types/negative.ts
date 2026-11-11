@@ -14,3 +14,4 @@ const flag: Promise<boolean> = pool.stop(); // TS2322 numbers, not a boolean
 const asMethod: () => unknown = channel.isConsumable; // TS2322 a getter, not a method
 const ids: number[] = pool.addConnection([]); // TS2322 channel ids are strings
 const at: number | false = pool.getConnectionIndexByUrl('u'); // TS2322 the index is a string
+channel.isClosed = true; // TS2540 isClosed is read-only

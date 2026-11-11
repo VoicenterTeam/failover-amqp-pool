@@ -38,7 +38,9 @@ declare class AMQPPool extends EventEmitter {
      * picks channels from the alive ones (nothing returned: the message is cached), and
      * omitted, or any other string, publishes on the first alive channel. Without an alive
      * channel the message is cached. A publish that fails on a channel is cached too, and an
-     * 'error' is emitted.
+     * 'error' is emitted. A cached 'all' message is retried on the channel that failed only; if
+     * that channel is gone (removed, or closed with close() and still listed) it is dropped, a
+     * closed one with an 'info' event { message: 'cached message dropped', channelId, reason }.
      * Throws Error('Pool is stopped') after stop().
      */
     publish(
@@ -249,6 +251,8 @@ declare namespace AMQPPool {
         alive: boolean;
         /** Whether the channel is open, without the re-create that reading `alive` starts. */
         readonly isAlive: boolean;
+        /** True once close() was called: the channel is final, though it may still be listed. */
+        readonly isClosed: boolean;
         /** The queue options as the channel declares them. */
         readonly queueOptions: Options.AssertQueue & { noAck: boolean };
         readonly exchangeOptions: Options.AssertExchange;
