@@ -113,8 +113,14 @@ declare namespace AMQPPool {
     // Here we just put all the things into one object and make all props non mandatory
     // So, one interface can work for various things
     interface OptionsConf {
+        /** Queue: default false, true for a queue the channel names itself (no queue name). */
         exclusive?: boolean,
+        /** Queue: default true, false for a queue the channel names itself (no queue name). */
         durable?: boolean,
+        /**
+         * Queue arguments, passed to the broker as given. A quorum queue ('x-queue-type': 'quorum')
+         * also gets 'x-consumer-timeout': 7200000 unless set; a classic queue gets no default.
+         */
         arguments?: any,
         /** Queue expiry in ms. 'none' is for dynamic queues only (a named queue is refused). */
         expires?: number | 'none',

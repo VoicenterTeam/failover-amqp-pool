@@ -260,7 +260,7 @@ test('live: a dynamic queue carries x-expires 1800000 on the broker',
       password: decodeURIComponent(u.password), ssl: false, reconnectInterval: 50 },
     channel: { prefetch: 5, exchange: { name: exchange, type: 'fanout' },
       binding: { enabled: true, options: [{ x: 1 }, { y: 2 }] },
-      queue: { options: { durable: false, autoDelete: false, messageTtl: 60000 } } },
+      queue: { options: { durable: true, exclusive: false, autoDelete: false, messageTtl: 60000 } } },
   }]);
   let dynamicName;
   const consuming = new Promise(resolve => pool.on('ready', ch => {
@@ -278,8 +278,7 @@ test('live: a dynamic queue carries x-expires 1800000 on the broker',
     await admin.close().catch(() => {});
   });
   await consuming;
-  const base = { durable: false, autoDelete: false, messageTtl: 60000,
-    arguments: { 'x-consumer-timeout': 7200000 } };
+  const base = { durable: true, autoDelete: false, messageTtl: 60000 };
   const declare = options => admin.createChannel().then(c => {
     c.on('error', () => {});   // a refused declare closes the channel
     return c.assertQueue(dynamicName, options);

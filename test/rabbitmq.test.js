@@ -22,7 +22,7 @@ async function setup(t) {
   const queue = `famqp-test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const admin = await amqplib.connect(URL_);
   const adminCh = await admin.createChannel();
-  await adminCh.assertQueue(queue, { durable: false, autoDelete: false });
+  await adminCh.assertQueue(queue, { durable: true, autoDelete: false });
   const pool = new AMQPPool([{
     connection: { host: u.hostname, port: Number(u.port), username: decodeURIComponent(u.username), password: decodeURIComponent(u.password), ssl: false, reconnectInterval: 50 },
     channel: { prefetch: 20, queue: { name: queue } }
@@ -198,7 +198,7 @@ test('issue #5: a re-create that fails on a deleted exchange retries and recover
     await admin.close().catch(() => {});
   });
   await adminCh.assertExchange(exchange, 'direct', { durable: false });
-  await adminCh.assertQueue(queue, { durable: false });
+  await adminCh.assertQueue(queue, { durable: true });
   const { pool, errors } = poolFor(t, { prefetch: 1, exchange: { name: exchange }, queue: { name: queue }, binding: { enabled: true, pattern: 'k' } });
   let ch, recreated = 0;
   pool.on('ready', c => { ch = c; });

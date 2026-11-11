@@ -480,7 +480,7 @@ async function livePool(t) {
   const queue = `famqp-chclose-${unique}`;
   const admin = await amqplib.connect(URL_);
   const adminCh = await admin.createChannel();
-  await adminCh.assertQueue(queue, { durable: false, autoDelete: false });
+  await adminCh.assertQueue(queue, { durable: true, autoDelete: false });
   const pool = new AMQPPool([{
     connection: { host: u.hostname, port: Number(u.port), username: decodeURIComponent(u.username),
       password: decodeURIComponent(u.password), ssl: false, reconnectInterval: 50 },

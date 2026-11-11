@@ -24,6 +24,44 @@ A robust AMQP client with connection pooling, automatic failover, and Winston tr
 - `winston-transport` is an optional peer dependency, needed only for the Winston transport.
   `nanoid` is no longer a dependency; nothing used it.
 
+## Queue defaults and RabbitMQ 4.3
+
+Queue declarations changed so a pool declares from nothing on RabbitMQ 4.3, which refuses a
+transient queue that is not exclusive (`transient_nonexcl_queues`: the broker closes the
+connection with `541 INTERNAL_ERROR`). Before, every queue defaulted to `durable: false`.
+
+- A named queue is declared `durable: true` unless `queue.options.durable` says otherwise.
+- A dynamic queue (no `queue.name`, the pool names it) is declared `exclusive: true` and
+  `durable: false`, with the 30 minute `x-expires` kept. `queue.options.durable` and
+  `queue.options.exclusive` are honoured when set, on either kind.
+- `x-consumer-timeout: 7200000` is a default argument for quorum queues only
+  (`arguments['x-queue-type'] === 'quorum'`), added when your `arguments` do not set it. A classic
+  queue gets no default argument and your `arguments` go to the broker as given.
+  On 3.13 a classic queue now takes the broker's `consumer_timeout` (30 minutes unless the broker
+  sets another), where the argument made it 2 hours. On 4.3 a classic queue has no consumer
+  timeout either way. `prefetch` (per consumer) is unchanged.
+
+Migrating:
+
+- **An existing named queue keeps working.** The pool checks a named queue first and declares it
+  only when the broker answers 404, so a transient queue that already exists is not redeclared as
+  durable (no `406 PRECONDITION_FAILED`). It breaks when the queue is deleted and the pool declares
+  it again: it comes back durable, and any other client that declares that name with
+  `durable: false` is then refused with 406. Declare it durable there, or keep it transient here
+  with `queue.options.durable: false` (3.13 only: 4.3 refuses it by default).
+- **An explicit `durable: false` on a named queue** is still honoured. On 4.3 it needs
+  `exclusive: true`, or the broker closes the connection when the pool declares it.
+- **A dynamic queue goes with its connection.** After a reconnect the channel declares it again
+  under the same name, binds it (`binding.enabled` or not) and consumes, but it is empty: what was
+  queued or delivered and not acked on the old connection is lost, and what was published while
+  the pool was down had no queue to reach. Within one connection (a channel re-create) the queue
+  stays. If the broker still holds the old connection when the pool reconnects, the check of the
+  queue answers `405 RESOURCE_LOCKED`, the create fails with `'cant establish a channel'` and is
+  retried until the broker drops the old connection. Set `queue.options.exclusive: false` to
+  keep a dynamic queue across connections; on 4.3 it needs `durable: true` as well.
+- **A dynamic quorum or stream queue** cannot be exclusive or transient: set
+  `exclusive: false, durable: true` with its `x-queue-type`, or the broker refuses it with 406.
+
 ## Breaking changes in 4.0.0
 
 - `@pm2/io` is gone, and with it the pm2 metrics (`[AMQP_POOL] [host]rabbit_*`). Metrics and
@@ -231,7 +269,9 @@ const config = [{
 }];
 ```
 
-A dynamic queue expires on the broker (`x-expires`) after 30 minutes without a consumer, so
+A dynamic queue is exclusive and not durable: it belongs to the channel's connection and the
+broker deletes it with the connection (see [Queue defaults](#queue-defaults-and-rabbitmq-43)).
+It also expires on the broker (`x-expires`) after 30 minutes without a consumer, so
 queues of channels that are gone do not pile up. Set `queue.options.expires` (ms) to change
 that, or `expires: 'none'` to keep a dynamic queue until it is deleted:
 
@@ -356,8 +396,8 @@ written to in place, so a pool retry of a cached message that had your options k
     queue: {
       name: 'queue-name',       // Queue name
       options: {
-        exclusive: false,       // Exclusive to connection
-        durable: true,         // Survive broker restarts
+        exclusive: false,       // Exclusive to connection (a dynamic queue: true)
+        durable: true,         // Survive broker restarts (a dynamic queue: false)
         autoDelete: false,     // Delete when last consumer unsubscribes
         messageTtl: 3600000,   // Message TTL in ms
         expires: undefined,    // Queue expiry in ms (a dynamic queue: 1800000, or 'none')
@@ -366,8 +406,8 @@ written to in place, so a pool retry of a cached message that had your options k
         maxLength: undefined,  // Maximum queue length
         maxPriority: undefined, // Maximum priority
         queueMode: undefined,  // Queue mode
-        arguments: {           // Additional arguments
-          "x-consumer-timeout": 7200000
+        arguments: {           // Additional arguments, passed as given
+          "x-queue-type": "quorum"  // a quorum queue also gets "x-consumer-timeout": 7200000
         }
       }
     },
