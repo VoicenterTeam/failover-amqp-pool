@@ -5,6 +5,7 @@ const assert = require('node:assert');
 const amqplib = require('amqplib');
 const AMQPPool = require('..');
 const { leftovers } = require('./helpers/leak-guard');
+const { own, acquireOwned } = require('./helpers/own');
 
 const URL_ = process.env.FAMQP_TEST_URL;
 const skip = URL_ ? false : 'FAMQP_TEST_URL not set';
@@ -22,9 +23,13 @@ async function until(cond, ms = 5000) {
 async function setup(t) {
   const u = new URL(URL_);
   const queue = `famqp-test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  // #93: each handle is owned as it is acquired; a row that timed out releases it at once
   const admin = await amqplib.connect(URL_);
+  await own(t, () => admin.close().catch(() => {}));
   const adminCh = await admin.createChannel();
-  await adminCh.assertQueue(queue, { durable: true, autoDelete: false, arguments: { 'x-expires': 600000 } });
+  const declare = () => adminCh.assertQueue(queue,
+    { durable: true, autoDelete: false, arguments: { 'x-expires': 600000 } });
+  await acquireOwned(t, declare, () => adminCh.deleteQueue(queue).catch(() => {}));
   const pool = new AMQPPool([{
     connection: { host: u.hostname, port: Number(u.port), username: decodeURIComponent(u.username), password: decodeURIComponent(u.password), ssl: false, reconnectInterval: 50 },
     channel: { prefetch: 20, queue: { name: queue } }
@@ -33,9 +38,7 @@ async function setup(t) {
   const infos = [];
   pool.on('error', e => errors.push(e));
   pool.on('info', i => infos.push(i));
-  t.after(async () => {
-    await adminCh.deleteQueue(queue).catch(() => {});
-    await admin.close().catch(() => {});
+  await own(t, async () => {
     const stopped = pool.stop();
     pool.on('error', () => {});  // stop() drops listeners; channel teardown may still emit
     await stopped.catch(() => {});
@@ -139,7 +142,7 @@ test('control: first ready, consume and ack work', { skip }, async t => {
 });
 
 // A pool on its own queue config, for create failures the broker produces.
-function poolFor(t, channel) {
+async function poolFor(t, channel) {
   const u = new URL(URL_);
   const pool = new AMQPPool([{
     connection: { host: u.hostname, port: Number(u.port), username: decodeURIComponent(u.username), password: decodeURIComponent(u.password), ssl: false, reconnectInterval: 50 },
@@ -147,7 +150,7 @@ function poolFor(t, channel) {
   }]);
   const errors = [];
   pool.on('error', e => errors.push(e));
-  t.after(async () => {
+  await own(t, async () => {
     const stopped = pool.stop();
     pool.on('error', () => {});
     await stopped.catch(() => {});
@@ -157,18 +160,21 @@ function poolFor(t, channel) {
 
 test('issue #5: a create that fails on a locked queue stays dead and retries until the queue is free', { skip }, async t => {
   const queue = `famqp-locked-${process.pid}-${Date.now()}`;
-  const admin = await amqplib.connect(URL_);
-  t.after(() => admin.close().catch(() => {}));
-  const adminCh = await admin.createChannel();
-  await adminCh.assertQueue(queue, { exclusive: true });   // 405 RESOURCE_LOCKED for any other connection
-  const { pool, errors } = poolFor(t, { prefetch: 1, queue: { name: queue, options: { autoDelete: true, arguments: { 'x-expires': 600000 } } } });
   // The pool's retry declares this name after the admin deleted it, and its autoDelete never
-  // fires without a consumer. poolFor's hook stops the pool; this one deletes the queue on its
-  // own connection, so it runs even when the test fails midway.
-  t.after(async () => {
+  // fires without a consumer. This release deletes the queue on its own connection, so it runs
+  // even when the test fails midway. Owned first, it runs last: after the pool has stopped and
+  // the admin, which holds the queue exclusive until then, has closed.
+  await own(t, async () => {
     const c = await amqplib.connect(URL_);
     try { await (await c.createChannel()).deleteQueue(queue); } finally { await c.close().catch(() => {}); }
   });
+  const admin = await amqplib.connect(URL_);
+  await own(t, () => admin.close().catch(() => {}));
+  const adminCh = await admin.createChannel();
+  // 405 RESOURCE_LOCKED for any other connection
+  await adminCh.assertQueue(queue, { exclusive: true });
+  const { pool, errors } = await poolFor(t, { prefetch: 1,
+    queue: { name: queue, options: { autoDelete: true, arguments: { 'x-expires': 600000 } } } });
   let ready = 0;
   pool.on('ready', () => ready++);
   await until(() => errors.some(e => e?.message === 'cant establish a channel' && e.err?.code === 405));
@@ -187,7 +193,8 @@ test('issue #5: an assertQueue failure after checkQueue 404 fails the create, no
   process.on('unhandledRejection', onUnhandled);
   t.after(() => process.off('unhandledRejection', onUnhandled));
   // an invalid x-max-length makes RabbitMQ refuse the declare with 406
-  const { pool, errors } = poolFor(t, { prefetch: 1, queue: { name: queue, options: { arguments: { 'x-max-length': 'bad' } } } });
+  const { pool, errors } = await poolFor(t,
+    { prefetch: 1, queue: { name: queue, options: { arguments: { 'x-max-length': 'bad' } } } });
   let ready = 0;
   pool.on('ready', () => ready++);
   await until(() => errors.some(e => e?.message === 'cant establish a channel' && e.err?.code === 406));
@@ -200,15 +207,16 @@ test('issue #5: a re-create that fails on a deleted exchange retries and recover
   const id = `${process.pid}-${Date.now()}`;
   const exchange = `famqp-ex-${id}`, queue = `famqp-exq-${id}`;
   const admin = await amqplib.connect(URL_);
+  await own(t, () => admin.close().catch(() => {}));
   const adminCh = await admin.createChannel();
-  t.after(async () => {
+  await own(t, async () => {
     await adminCh.deleteQueue(queue).catch(() => {});
     await adminCh.deleteExchange(exchange).catch(() => {});
-    await admin.close().catch(() => {});
   });
   await adminCh.assertExchange(exchange, 'direct', { durable: false });
   await adminCh.assertQueue(queue, { durable: true, arguments: { 'x-expires': 600000 } });
-  const { pool, errors } = poolFor(t, { prefetch: 1, exchange: { name: exchange }, queue: { name: queue }, binding: { enabled: true, pattern: 'k' } });
+  const { pool, errors } = await poolFor(t, { prefetch: 1, exchange: { name: exchange },
+    queue: { name: queue }, binding: { enabled: true, pattern: 'k' } });
   let ch, recreated = 0;
   pool.on('ready', c => { ch = c; });
   pool.on('recreated', () => recreated++);
@@ -284,10 +292,12 @@ async function mgmt(method, path, body) {
 }
 
 // a pool for one user that records every event; returns the recorded events and helpers.
-// The user's DELETE hook registers as soon as the user exists, before a step that can throw.
+// The user's DELETE is owned before its PUT, so a PUT that fails after the broker made the user
+// still leaves none.
 async function credentialPool(t, username, password, vhost = '/') {
-  await mgmt('PUT', `users/${encodeURIComponent(username)}`, { password, tags: '' });
-  t.after(() => mgmt('DELETE', `users/${encodeURIComponent(username)}`));
+  const user = `users/${encodeURIComponent(username)}`;
+  const put = () => mgmt('PUT', user, { password, tags: '' });
+  await acquireOwned(t, put, () => mgmt('DELETE', user));
   const grant = `permissions/${encodeURIComponent(vhost)}/${encodeURIComponent(username)}`;
   await mgmt('PUT', grant, { configure: '.*', write: '.*', read: '.*' });
   const u = new URL(URL_);
@@ -299,7 +309,7 @@ async function credentialPool(t, username, password, vhost = '/') {
   const emit = pool.emit.bind(pool);
   pool.emit = (name, ...args) => { events.push([name, args]); return emit(name, ...args); };
   pool.on('error', () => {});
-  t.after(async () => {
+  await own(t, async () => {
     const s = pool.stop(); pool.on('error', () => {}); await s.catch(() => {});
   });
   const text = () => events.map(([n, args]) => n + ' ' + args.map(a => {
@@ -317,7 +327,8 @@ test('issue #9: passwords with URL syntax characters log in and are not emitted'
   const passwords = ['/Zm9vYmFy', '?q=1#frag', '#hash', 'a@b:c/d?e#f%25g+h i', '12/34', '%zz'];
   for (const [i, password] of passwords.entries()) {
     await t.test(JSON.stringify(password), async t2 => {
-      const { pool, assertNoSecret } = await credentialPool(t2, `famqp-i9-${process.pid}-${i}`, password);
+      const username = `famqp-i9-${process.pid}-${STARTED}-${i}`;
+      const { pool, assertNoSecret } = await credentialPool(t2, username, password);
       let ready = false;
       pool.on('ready', () => { ready = true; });
       await until(() => ready);
@@ -330,7 +341,8 @@ test('issue #9: passwords with URL syntax characters log in and are not emitted'
 // so a non-ASCII password reaches the broker mangled; the login is refused (README documents it)
 test('issue #9: a non-ASCII password is refused (amqplib limit) and is not emitted', { skip: skipMgmt }, async t => {
   const password = 'pässwörd';
-  const { events, assertNoSecret } = await credentialPool(t, `famqp-i9-${process.pid}-nonascii`, password);
+  const username = `famqp-i9-${process.pid}-${STARTED}-nonascii`;
+  const { events, assertNoSecret } = await credentialPool(t, username, password);
   await until(() => events.some(([n, [a]]) => n === 'error' && /ACCESS_REFUSED|PLAIN login refused/i.test(String(a?.error?.message))));
   assertNoSecret();
 });
@@ -357,13 +369,14 @@ test('#60 a failing permissions PUT in credentialPool leaves no user on the brok
 test('issue #9: vhosts with URL syntax characters, and the default vhost, connect', { skip: skipMgmt, timeout: 60000 }, async t => {
   const u = new URL(URL_);
   const user = decodeURIComponent(u.username);
-  const vhosts = ['/', `/famqp-prod-${process.pid}`, `/famqp-a#b?c-${process.pid}`, `/%famqp-pct-${process.pid}`];
+  const id = `${process.pid}-${STARTED}`;   // #98: the guard lists a vhost this run left
+  const vhosts = ['/', `/famqp-prod-${id}`, `/famqp-a#b?c-${id}`, `/%famqp-pct-${id}`];
   for (const vhost of vhosts) {
     await t.test(JSON.stringify(vhost), async t2 => {
       const name = vhost.slice(1);
       if (name) {
-        await mgmt('PUT', `vhosts/${encodeURIComponent(name)}`, {});
-        t2.after(() => mgmt('DELETE', `vhosts/${encodeURIComponent(name)}`));
+        const path = `vhosts/${encodeURIComponent(name)}`;
+        await acquireOwned(t2, () => mgmt('PUT', path, {}), () => mgmt('DELETE', path));
         await mgmt('PUT', `permissions/${encodeURIComponent(name)}/${encodeURIComponent(user)}`, { configure: '.*', write: '.*', read: '.*' });
       }
       const pool = new AMQPPool([{
@@ -371,7 +384,7 @@ test('issue #9: vhosts with URL syntax characters, and the default vhost, connec
         channel: { exchange: { name: 'amq.direct' } }
       }]);
       pool.on('error', () => {});
-      t2.after(async () => {
+      await own(t2, async () => {
         const s = pool.stop(); pool.on('error', () => {}); await s.catch(() => {});
       });
       let ready = false;
@@ -387,9 +400,13 @@ test('issue #9: vhosts with URL syntax characters, and the default vhost, connec
 const named = async name =>
   (await mgmt('GET', 'connections')).filter(c => c.client_properties?.connection_name === name);
 
+// The API lists it a moment later. A pinned 500 polls: a row that timed out stops polling.
 async function closeFromBroker(name) {
   let mine;
-  while (!(mine = (await named(name))[0])) await wait(20);  // the API lists it a moment later
+  for (let polls = 0; !(mine = (await named(name))[0]); polls++) {
+    if (polls === 500) throw new Error(`connection ${name} never listed`);
+    await wait(20);
+  }
   await mgmt('DELETE', `connections/${encodeURIComponent(mine.name)}`);
 }
 
@@ -434,18 +451,20 @@ test('issue #31: stop() after a broker-side close resolves, rejects nothing, con
 
 // issue #49: nothing this process declared may outlive the file. Only with the management API.
 const runLeftovers = () =>
-  leftovers(path => mgmt('GET', path), { pid: process.pid, since: STARTED });
+  leftovers(path => mgmt('GET', path), { pid: process.pid, since: STARTED, accounts: true });
 
 // #65: the guard sees a queue this run leaves on the live broker, and stops seeing it once gone
 test('#65 the leak guard reports a queue this run left, and not after it is deleted',
   { skip: skipMgmt }, async t => {
     const queue = `famqp-i65-${process.pid}-${Date.now()}`;
     const admin = await amqplib.connect(URL_);
-    t.after(() => admin.close().catch(() => {}));
+    await own(t, () => admin.close().catch(() => {}));
     const ch = await admin.createChannel();
     // durable: RabbitMQ 4 refuses a transient queue that is not exclusive
-    await ch.assertQueue(queue, { durable: true, arguments: { 'x-expires': 600000 } });
-    t.after(() => mgmt('DELETE', `queues/%2F/${encodeURIComponent(queue)}`));
+    const declare = () => ch.assertQueue(queue,
+      { durable: true, arguments: { 'x-expires': 600000 } });
+    const drop = () => mgmt('DELETE', `queues/%2F/${encodeURIComponent(queue)}`);
+    await acquireOwned(t, declare, drop);
     assert.deepStrictEqual(await runLeftovers(), [`queues:${queue}`]);
     await ch.deleteQueue(queue);
     assert.deepStrictEqual(await runLeftovers(), []);

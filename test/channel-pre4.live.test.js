@@ -11,6 +11,7 @@ const {
   connectionNamed,
   closeConnection,
 } = require('./helpers/mgmt');
+const { own, acquireOwned } = require('./helpers/own');
 
 const URL_ = process.env.FAMQP_TEST_URL;
 const skipLive = !URL_ ? 'FAMQP_TEST_URL not set' : !MGMT ? 'FAMQP_TEST_MGMT_URL not set' : false;
@@ -38,10 +39,21 @@ async function livePool(t, channelConf, user) {
   const u = new URL(URL_);
   const exchange = unique('x');
   const connection_name = unique('conn');
+  // each handle is owned as it is acquired; a row that timed out releases it at once (#93)
   const admin = await amqplib.connect(URL_);
+  await own(t, () => admin.close().catch(() => {}));
   const adminCh = await admin.createChannel();
   adminCh.on('error', () => {});
-  await adminCh.assertExchange(exchange, 'fanout', { durable: false });
+  // owned before the declare, on a fresh channel: a refused call closes adminCh
+  const dropExchange = async () => {
+    const c = await admin.createChannel().catch(() => null);
+    if (!c) return; // the admin connection is gone
+    c.on('error', () => {});
+    await c.deleteExchange(exchange).catch(() => {});
+    await c.close().catch(() => {});
+  };
+  const declare = () => adminCh.assertExchange(exchange, 'fanout', { durable: false });
+  await acquireOwned(t, declare, dropExchange);
   const queues = [];
   const pool = new AMQPPool([
     {
@@ -61,7 +73,7 @@ async function livePool(t, channelConf, user) {
   for (const e of ['error', 'close', 'info', 'ready', 'recreated'])
     pool.on(e, (a) => events.push([e, a]));
   const of = (e) => events.filter((x) => x[0] === e).map((x) => x[1]);
-  t.after(async () => {
+  await own(t, async () => {
     const stopped = pool.stop();
     await stopped.catch(() => {});
     // one fresh channel per delete: a refused delete (an exclusive queue held by its connection)
@@ -76,7 +88,6 @@ async function livePool(t, channelConf, user) {
     };
     for (const q of queues) await drop('deleteQueue', q);
     await drop('deleteExchange', exchange);
-    await admin.close().catch(() => {});
   });
   return {
     pool,
@@ -185,8 +196,10 @@ test('live: a real channel close still emits close', { skip: skipLive }, async (
 async function throwaway(t, permissions) {
   const name = unique('user');
   const password = 'pw-' + name;
-  await api('PUT', `users/${encodeURIComponent(name)}`, { password, tags: '' });
-  t.after(() => api('DELETE', `users/${encodeURIComponent(name)}`).catch(() => {}));
+  const user = `users/${encodeURIComponent(name)}`;
+  // owned before the PUT: a PUT that fails after the broker made the user still leaves none
+  const put = () => api('PUT', user, { password, tags: '' });
+  await acquireOwned(t, put, () => api('DELETE', user).catch(() => {}));
   await api('PUT', `permissions/%2F/${encodeURIComponent(name)}`, permissions);
   return { name, password };
 }

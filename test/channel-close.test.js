@@ -5,6 +5,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { EventEmitter } = require('node:events');
 const amqplib = require('amqplib');
+const { own, acquireOwned } = require('./helpers/own');
 const AMQPPool = require('..');
 const Channel = require('../Channel');
 const { FakeAmqpChannel } = require('./helpers/fakes');
@@ -478,9 +479,12 @@ async function livePool(t) {
   const u = new URL(URL_);
   const unique = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const queue = `famqp-chclose-${unique}`;
+  // each handle is owned as it is acquired; a row that timed out releases it at once (#93)
   const admin = await amqplib.connect(URL_);
+  await own(t, () => admin.close().catch(() => {}));
   const adminCh = await admin.createChannel();
-  await adminCh.assertQueue(queue, { durable: true, autoDelete: false });
+  const declare = () => adminCh.assertQueue(queue, { durable: true, autoDelete: false });
+  await acquireOwned(t, declare, () => adminCh.deleteQueue(queue).catch(() => {}));
   const pool = new AMQPPool([{
     connection: { host: u.hostname, port: Number(u.port), username: decodeURIComponent(u.username),
       password: decodeURIComponent(u.password), ssl: false, reconnectInterval: 50 },
@@ -489,9 +493,7 @@ async function livePool(t) {
   const infos = [];
   pool.on('info', i => infos.push(i));
   pool.on('ready', ch => ch.consume());
-  t.after(async () => {
-    await adminCh.deleteQueue(queue).catch(() => {});
-    await admin.close().catch(() => {});
+  await own(t, async () => {
     const stopped = pool.stop();
     pool.on('error', () => {});
     await stopped.catch(() => {});

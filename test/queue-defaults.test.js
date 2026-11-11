@@ -10,6 +10,7 @@ const Channel = require('../Channel');
 const { FakeAmqpChannel } = require('./helpers/fakes');
 const { MGMT, mgmt, until, queuePath, queueInfo, connectionNamed, closeConnection } =
   require('./helpers/mgmt');
+const { own } = require('./helpers/own');
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const created = ch => new Promise(resolve => {
@@ -272,7 +273,9 @@ async function livePool(t, channelConf, queueNames = []) {
   const u = new URL(URL_);
   const exchange = unique('x');
   const connection_name = unique('conn');
+  // #93: each handle is owned as it is acquired; a row that timed out releases it at once
   const admin = await amqplib.connect(URL_);
+  await own(t, () => admin.close().catch(() => {}));
   const adminCh = await admin.createChannel();
   const pool = new AMQPPool([{
     connection: { host: u.hostname, port: Number(u.port), username: decodeURIComponent(u.username),
@@ -285,13 +288,12 @@ async function livePool(t, channelConf, queueNames = []) {
   const events = [];   // the pool's 'error' and 'info' events in order, for a row that gives up
   pool.on('error', e => { errors.push(e); events.push(['error', e]); });
   pool.on('info', i => events.push(['info', i]));
-  t.after(async () => {
+  await own(t, async () => {
     const stopped = pool.stop();
     pool.on('error', () => {});
     await stopped.catch(() => {});
     for (const q of queueNames) await adminCh.deleteQueue(q).catch(() => {});
     await adminCh.deleteExchange(exchange).catch(() => {});
-    await admin.close().catch(() => {});
   });
   const connectionName = `${connection_name}_${os.hostname}`;
   return { pool, admin, adminCh, exchange, errors, events, queueNames, connectionName };
@@ -308,7 +310,8 @@ function waitEvent(emitter, event, test = () => true, polls = 90) {
 }
 const readyChannel = pool => waitEvent(pool, 'ready');
 const recreatedChannel = pool => waitEvent(pool, 'recreated');
-const consuming = ch => waitEvent(ch, 'info', i => i?.message?.startsWith?.('consume from queue'));
+const isConsume = i => i?.message?.startsWith?.('consume from queue');
+const consuming = ch => waitEvent(ch, 'info', isConsume);
 
 // #78: a wait that, giving up, carries the pool's 'error' and 'info' events in its error's
 // `events` field, and names them in its message for the run's log.
@@ -335,13 +338,16 @@ test('#78 a wait for ready that gives up carries the pool events it saw', async 
 // The quorum rows' window (#78). Declare-to-ready, measured on 3.13.7 and 4.3.7 with
 // `node test/helpers/quorum-ready-time.js <amqp url> <runs>`, n=20 alone and n=30 while
 // `npm test` ran with both URLs on the same broker: p99 146 / 133 ms alone, 171 / 242 ms loaded.
-// The latency alone asks for a second or so. The one recorded timeout waited over 9 s, 37 times
-// the worst p99, so latency does not explain it, and the window is a floor set above that one
-// failure: 50 times the worst p99, the round margin above 37, 12.1 s, 121 polls of 100 ms. A
-// give-up names the pool's events (above), which is what tells the next failure's cause.
+// A whole row runs longer under the suite (#91): in the PR #84 re-review's n=4 gate runs of
+// `npm test` with both URLs, the two quorum rows took 4735 and 3759 ms on 3.13.7 and 3649 and
+// 2820 ms on 4.3.7, and 264 to 380 ms in the other runs. So a whole row takes up to 4.7 s.
+// The one recorded timeout waited over 9 s, 37 times the worst p99, so latency does not explain
+// it, and the window is a floor set above that one failure: 50 times the worst p99, the round
+// margin above 37, 12.1 s, 121 polls of 100 ms, 2.6 times the 4.7 s row. A give-up names the
+// pool's events (above), which is what tells the next failure's cause.
 const QUORUM_READY_POLLS = 121;
-// a row with two such waits, plus 10 s for its own steps and cleanup
-const QUORUM_ROW_TIMEOUT = 2 * QUORUM_READY_POLLS * 100 + 10000;
+// a row with `waits` such waits, plus 10 s for its own steps and cleanup
+const quorumRowTimeout = waits => waits * QUORUM_READY_POLLS * 100 + 10000;
 
 test('live: a named queue that does not exist is declared durable, with no consumer timeout',
   { skip: skipLive }, async t => {
@@ -361,9 +367,12 @@ test('live: a dynamic queue that does not exist is declared exclusive, transient
   const ch = await readyChannel(pool);
   const done = consuming(ch);
   ch.consume();
+  // the dynamic queue's DELETE, registered before the wait: a row that gives up there still
+  // removes it, and the #65 guard does not see <id>:<hostname> names. A plain t.after, not
+  // own(): own() runs newest first and would delete the queue before livePool stops the pool.
+  t.after(() => ch.queue?.name && mgmt('DELETE', queuePath(ch.queue.name)));
   await done;
   const info = await queueInfo(ch.queue.name);
-  t.after(() => mgmt('DELETE', queuePath(ch.queue.name)));
   assert.strictEqual(info.durable, false);
   assert.strictEqual(info.exclusive, true);
   assert.strictEqual(info.arguments['x-expires'], 1800000);
@@ -371,7 +380,7 @@ test('live: a dynamic queue that does not exist is declared exclusive, transient
 });
 
 test('live: a quorum queue that does not exist is declared durable, x-consumer-timeout 7200000',
-  { skip: skipLive, timeout: QUORUM_ROW_TIMEOUT }, async t => {
+  { skip: skipLive, timeout: quorumRowTimeout(1) }, async t => {
   const name = unique('quorum');
   const { pool, events } = await livePool(t,
     { prefetch: 5, queue: { name, options: { arguments: { 'x-queue-type': 'quorum' } } } },
@@ -385,17 +394,16 @@ test('live: a quorum queue that does not exist is declared durable, x-consumer-t
 });
 
 test('live: a dynamic quorum queue is declared from nothing, durable, and consumes',
-  { skip: skipLive, timeout: QUORUM_ROW_TIMEOUT }, async t => {
+  { skip: skipLive, timeout: quorumRowTimeout(2) }, async t => {
   const conf = { prefetch: 5, queue: { options: { arguments: { 'x-queue-type': 'quorum' } } } };
   const { pool, adminCh, exchange, events } = await livePool(t, conf);
   const ch = await readyOrEvents(pool, events, QUORUM_READY_POLLS);
   const bodies = [];
   ch.on('message', m => { bodies.push(m.content.toString()); ch.ack(m); });
-  const isConsume = i => i?.message?.startsWith?.('consume from queue');
   const done = orEvents(waitEvent(ch, 'info', isConsume, QUORUM_READY_POLLS), events);
   ch.consume();
+  t.after(() => ch.queue?.name && mgmt('DELETE', queuePath(ch.queue.name)));   // as above
   await done;
-  t.after(() => mgmt('DELETE', queuePath(ch.queue.name)));
   for (let i = 0; i < 40 && !bodies.includes('hello'); i++) {
     adminCh.publish(exchange, '', Buffer.from('hello'));
     await new Promise(r => setTimeout(r, 100));
@@ -418,8 +426,8 @@ test('live: a dynamic stream with expires and messageTtl none is declared durabl
   const ch = await readyChannel(pool);
   const done = consuming(ch);
   ch.consume();
+  t.after(() => ch.queue?.name && mgmt('DELETE', queuePath(ch.queue.name)));   // as above
   await done;
-  t.after(() => mgmt('DELETE', queuePath(ch.queue.name)));
   const info = await queueInfo(ch.queue.name);
   assert.strictEqual(info.type, 'stream');
   assert.strictEqual(info.durable, true);
@@ -444,9 +452,9 @@ test('live: after a reconnect the dynamic queue is declared again, its old messa
   });
   const done = consuming(ch);
   ch.consume();
+  t.after(() => ch.queue?.name && mgmt('DELETE', queuePath(ch.queue.name)));   // as above
   await done;
   const name = ch.queue.name;
-  t.after(() => mgmt('DELETE', queuePath(name)));
   adminCh.publish(exchange, '', Buffer.from('held-1'));
   adminCh.publish(exchange, '', Buffer.from('held-2'));    // waits behind held-1 (prefetch 1)
   await until(() => held, 'held-1 delivered', 90);
@@ -475,9 +483,9 @@ test('live: a channel re-create on the same connection finds its exclusive queue
   ch.on('message', m => { bodies.push(m.content.toString()); ch.ack(m); });
   const done = consuming(ch);
   ch.consume();
+  t.after(() => ch.queue?.name && mgmt('DELETE', queuePath(ch.queue.name)));   // as above
   await done;
   const name = ch.queue.name;
-  t.after(() => mgmt('DELETE', queuePath(name)));
   let again = false;
   pool.once('recreated', () => { again = true; });
   // a 404 closes the channel; reading alive re-creates it
