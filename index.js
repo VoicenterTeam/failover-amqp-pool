@@ -158,11 +158,11 @@ class AMQPPool extends EventEmitter {
     this.interval = setInterval(() => this.#retry(), msgCacheInterval);
   }
 
-  // One pass down the cache, oldest first. Entries keep their places: one that cannot go out
-  // stays where it is, one that went out or was dropped leaves. The pass ends after the first
-  // entry a channel took, so a tick delivers one cached message. A channel that fails in the
-  // pass is not tried again in it, so its later entries keep their order, and the pass reports
-  // only its first failure. The pass's events go out once the cache holds its result.
+  // One pass down the cache, oldest first, over the entries cached when the tick began: it sends
+  // every one a live channel takes. Entries keep their places: one that cannot go out stays
+  // where it is, one that went out or was dropped leaves. A channel that fails in the pass is
+  // not tried again in it, so its later entries keep their order, and the pass reports only its
+  // first failure. The pass's events go out once the cache holds its result.
   #retry() {
     const cache = this.msgCache;
     if (cache.length === 0 || this.getAllChannels().length === 0) return;
@@ -173,11 +173,10 @@ class AMQPPool extends EventEmitter {
     let at = 0;
     while (at < end && !this.#stopped) {
       const tried = cache[at++];
-      const { keep, sent } = this.#attempt(tried, pass, notes);
+      const { keep } = this.#attempt(tried, pass, notes);
       for (const entry of keep) kept.push({ entry, added: entry !== tried });
-      if (sent) break;
     }
-    // past `at`: the entries the pass did not reach, then any a listener cached during it.
+    // past `at`: any entries a stop() kept the pass from, then any a listener cached during it.
     // Cached entries go back by index; one the pass made (an 'all' split) is added, in its place.
     const rest = cache.slice(at);
     cache.length = 0;
