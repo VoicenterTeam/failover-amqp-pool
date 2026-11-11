@@ -213,8 +213,10 @@ class AMQPPool extends EventEmitter {
       else {
         if (filteredChannels instanceof Channel) filteredChannels = [filteredChannels];
         for (let channelIndex in filteredChannels) {
-          this.#publishOn(filteredChannels[channelIndex], {msg, filter, topic, props},
-            !retryFilters.has(filter));
+          const channel = filteredChannels[channelIndex];
+          // a closed channel takes nothing, now or on a retry: no entry is cached for it
+          if (channel?.isClosed) this.#dropForClosed(channel, props);
+          else this.#publishOn(channel, {msg, filter, topic, props}, !retryFilters.has(filter));
         }
       }
     } else if (filter === 'rr') {
