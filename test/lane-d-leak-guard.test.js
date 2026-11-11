@@ -47,7 +47,7 @@ test('#65 only names carrying this pid and a time from this run count', async ()
     'this run, an exchange': [`famqp-ex-${pid}-${since}`, true],
     'same pid, an older run': [`famqp-test-${pid}-${since - 1}-b2`, false],
     'pid as the tail of a longer one': [`famqp-test-1${pid}-${since + 1}-c3`, false],
-    'not famqp-': [`other-${pid}-${since + 1}`, false],
+    'famqp- inside the name, not at its start': [`x-famqp-test-${pid}-${since + 1}`, false],
   };
   const exchange = rows['this run, an exchange'][0];
   const queues = Object.values(rows).map(([name]) => name).filter(n => n !== exchange);
