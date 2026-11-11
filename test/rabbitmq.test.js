@@ -344,9 +344,12 @@ test('#60 a failing permissions PUT in credentialPool leaves no user on the brok
     const hooks = [];
     const scope = { after: hook => hooks.push(hook) };
     const missing = `famqp-i60-missing-${process.pid}`;
-    const made = credentialPool(scope, username, 'pw', missing);
-    await assert.rejects(made, /^Error: PUT permissions/);
-    for (const hook of hooks.reverse()) await hook();
+    // the hooks run however the call ends: a PUT that succeeds leaves a pool to stop
+    try {
+      await assert.rejects(credentialPool(scope, username, 'pw', missing), /^Error: PUT perm/);
+    } finally {
+      for (const hook of hooks.reverse()) await hook();
+    }
     await assert.rejects(mgmt('GET', user), { message: `GET ${user}: 404` });
   });
 
