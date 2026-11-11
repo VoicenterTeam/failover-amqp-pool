@@ -528,6 +528,12 @@ new amqplib channel, unless `close()` was called on it: `close()` is final. Afte
 instead. `amqp.removeChannelById(id)` closes the channel and removes it, and resolves also
 for a channel that is already dead.
 
+A message cached by an `'all'` publish that failed on one channel is retried on that channel
+only. If that channel is gone, because it was removed or because it was closed with `close()`
+and left on its connection, the retry drops the message. A closed channel still listed drops it
+with one `'info'` event, `{ message: 'cached message dropped', channelId, reason: 'channel is closed' }`.
+A channel that is down but not closed keeps the message cached until it is alive again.
+
 `channel.isClosed` is `true` once `close()` was called on the channel, and stays `true`. It is
 `false` on a new channel and while the channel is down and being re-created.
 

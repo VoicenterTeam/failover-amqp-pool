@@ -26,7 +26,7 @@ const config: AMQPPool.AmqpConfig[] = [{
 async function main(): Promise<void> {
     const pool = new AMQPPool(config);
     pool.on('ready', (channel: AMQPPool.Channel) => { channel.sendToQueue('q', 'hi'); });
-    pool.on('recreated', channel => { channel.consume(); });
+    pool.on('recreated', channel => { const closed: boolean = channel.isClosed; void closed; channel.consume(); });
     pool.on('channelMessage', (msg: ConsumeMessage) => { pool.ack(msg); });
     pool.on('close', (url?: string) => { void url; });
     pool.on('error', error => { void error.message; });

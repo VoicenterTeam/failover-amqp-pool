@@ -246,11 +246,21 @@ class AMQPPool extends EventEmitter {
   // The filter a failed 'all' publish is cached with: the Channel object itself (an _id changes
   // on every re-create), while it is alive. While it is still in the pool but down, null, which
   // publish() caches again. Once it is removed from the pool, [], which is truthy and drops the
-  // entry: no retry could ever reach it.
+  // entry: no retry could ever reach it. A channel closed with close() but still listed is as
+  // final: the entry is dropped, with one 'info'.
   #onlyChannel(channel) {
     const filter = alive => {
       if (alive.includes(channel)) return [channel];
-      return this.getAllChannels().includes(channel) ? null : [];
+      if (!this.getAllChannels().includes(channel)) return [];
+      if (!channel.isClosed) return null;
+      if (!this.#stopped) {
+        this.emit('info', {
+          message: 'cached message dropped',
+          channelId: channel._id,
+          reason: 'channel is closed'
+        });
+      }
+      return [];
     };
     retryFilters.add(filter);
     return filter;
