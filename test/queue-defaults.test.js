@@ -310,7 +310,8 @@ function waitEvent(emitter, event, test = () => true, polls = 90) {
 }
 const readyChannel = pool => waitEvent(pool, 'ready');
 const recreatedChannel = pool => waitEvent(pool, 'recreated');
-const consuming = ch => waitEvent(ch, 'info', i => i?.message?.startsWith?.('consume from queue'));
+const isConsume = i => i?.message?.startsWith?.('consume from queue');
+const consuming = ch => waitEvent(ch, 'info', isConsume);
 
 // #78: a wait that, giving up, carries the pool's 'error' and 'info' events in its error's
 // `events` field, and names them in its message for the run's log.
@@ -337,10 +338,13 @@ test('#78 a wait for ready that gives up carries the pool events it saw', async 
 // The quorum rows' window (#78). Declare-to-ready, measured on 3.13.7 and 4.3.7 with
 // `node test/helpers/quorum-ready-time.js <amqp url> <runs>`, n=20 alone and n=30 while
 // `npm test` ran with both URLs on the same broker: p99 146 / 133 ms alone, 171 / 242 ms loaded.
-// The latency alone asks for a second or so. The one recorded timeout waited over 9 s, 37 times
-// the worst p99, so latency does not explain it, and the window is a floor set above that one
-// failure: 50 times the worst p99, the round margin above 37, 12.1 s, 121 polls of 100 ms. A
-// give-up names the pool's events (above), which is what tells the next failure's cause.
+// A whole row runs longer under the suite (#91): in the PR #84 re-review's n=4 gate runs of
+// `npm test` with both URLs, the two quorum rows took 4735 and 3759 ms on 3.13.7 and 3649 and
+// 2820 ms on 4.3.7, and 264 to 380 ms in the other runs. So the latency asks for up to 4.7 s.
+// The one recorded timeout waited over 9 s, 37 times the worst p99, so latency does not explain
+// it, and the window is a floor set above that one failure: 50 times the worst p99, the round
+// margin above 37, 12.1 s, 121 polls of 100 ms, 2.6 times the 4.7 s row. A give-up names the
+// pool's events (above), which is what tells the next failure's cause.
 const QUORUM_READY_POLLS = 121;
 // a row with two such waits, plus 10 s for its own steps and cleanup
 const QUORUM_ROW_TIMEOUT = 2 * QUORUM_READY_POLLS * 100 + 10000;
@@ -393,7 +397,6 @@ test('live: a dynamic quorum queue is declared from nothing, durable, and consum
   const ch = await readyOrEvents(pool, events, QUORUM_READY_POLLS);
   const bodies = [];
   ch.on('message', m => { bodies.push(m.content.toString()); ch.ack(m); });
-  const isConsume = i => i?.message?.startsWith?.('consume from queue');
   const done = orEvents(waitEvent(ch, 'info', isConsume, QUORUM_READY_POLLS), events);
   ch.consume();
   await done;
