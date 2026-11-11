@@ -186,7 +186,7 @@ class AMQPPool extends EventEmitter {
       else cache[cache.length] = entry;
     }
     for (const entry of rest) cache[cache.length] = entry;
-    this.#notify(notes);
+    this.#tell(notes);
   }
   
   async stop() {
@@ -338,6 +338,22 @@ class AMQPPool extends EventEmitter {
 
   #notify(notes) {
     for (const [event, payload] of notes) if (!this.#stopped) this.emit(event, payload);
+  }
+
+  // The tick's events. The tick runs in a timer, where a throw would end the process, so an
+  // 'error' nobody listens to becomes a process warning, and so does a listener's throw.
+  #tell(notes) {
+    for (const [event, payload] of notes) {
+      if (this.#stopped) return;
+      if (event === 'error' && this.listenerCount('error') === 0) warn(payload);
+      for (const fn of this.rawListeners(event)) {
+        try {
+          fn.call(this, payload);
+        } catch (err) {
+          warn(err);
+        }
+      }
+    }
   }
 
   // The filter a failed 'all' publish is cached with: the Channel object itself (an _id changes
