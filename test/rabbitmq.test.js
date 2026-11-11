@@ -4,6 +4,7 @@ const { test, after } = require('node:test');
 const assert = require('node:assert');
 const amqplib = require('amqplib');
 const AMQPPool = require('..');
+const { leftovers } = require('./helpers/leak-guard');
 
 const URL_ = process.env.FAMQP_TEST_URL;
 const skip = URL_ ? false : 'FAMQP_TEST_URL not set';
@@ -430,12 +431,6 @@ test('issue #31: stop() after a broker-side close resolves, rejects nothing, con
 // issue #49: nothing this process declared may outlive the file. Only with the management API.
 after(async () => {
   if (!MGMT || !URL_) return;
-  const mine = `-${process.pid}-`;
-  const left = [];
-  for (const kind of ['queues', 'exchanges']) {
-    for (const x of (await mgmt('GET', `${kind}/%2F?columns=name&page=1&page_size=500`)).items) {
-      if (x.name.startsWith('famqp-') && x.name.includes(mine)) left.push(`${kind}:${x.name}`);
-    }
-  }
+  const left = await leftovers(path => mgmt('GET', path), { pid: process.pid });
   assert.deepStrictEqual(left, []);
 });
