@@ -368,7 +368,8 @@ test('live: a dynamic queue that does not exist is declared exclusive, transient
   const done = consuming(ch);
   ch.consume();
   // the dynamic queue's DELETE, registered before the wait: a row that gives up there still
-  // removes it, and the #65 guard does not see <id>:<hostname> names
+  // removes it, and the #65 guard does not see <id>:<hostname> names. A plain t.after, not
+  // own(): own() runs newest first and would delete the queue before livePool stops the pool.
   t.after(() => ch.queue?.name && mgmt('DELETE', queuePath(ch.queue.name)));
   await done;
   const info = await queueInfo(ch.queue.name);
