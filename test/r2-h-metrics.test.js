@@ -170,6 +170,6 @@ const GC_PROBE = `
 
 test('#85 item 1: a provider replaced by another can be garbage-collected', () => {
   const out = execFileSync(process.execPath, ['--expose-gc', '-e', GC_PROBE],
-    { cwd: path.join(__dirname, '..') }).toString();
+    { cwd: path.join(__dirname, '..'), timeout: 30000 }).toString();
   assert.deepStrictEqual(JSON.parse(out), { collected: true });
 });
