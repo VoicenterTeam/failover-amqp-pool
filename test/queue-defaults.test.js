@@ -310,11 +310,11 @@ const readyChannel = pool => waitEvent(pool, 'ready');
 const recreatedChannel = pool => waitEvent(pool, 'recreated');
 const consuming = ch => waitEvent(ch, 'info', i => i?.message?.startsWith?.('consume from queue'));
 
-// #78: 'ready' within `polls` polls of 100 ms. Giving up, the error carries the pool's 'error'
-// and 'info' events in its `events` field, and its message names them for the run's log.
-async function readyOrEvents(pool, events, polls) {
+// #78: a wait that, giving up, carries the pool's 'error' and 'info' events in its error's
+// `events` field, and names them in its message for the run's log.
+async function orEvents(waiting, events) {
   try {
-    return await waitEvent(pool, 'ready', undefined, polls);
+    return await waiting;
   } catch (e) {
     e.events = events.slice();
     const seen = events.map(([name, arg]) => `${name} ${arg?.message ?? arg}`);
@@ -322,6 +322,9 @@ async function readyOrEvents(pool, events, polls) {
     throw e;
   }
 }
+// 'ready' within `polls` polls of 100 ms
+const readyOrEvents = (pool, events, polls) =>
+  orEvents(waitEvent(pool, 'ready', undefined, polls), events);
 
 test('#78 a wait for ready that gives up carries the pool events it saw', async () => {
   const events = [['info', { message: 'Connection created' }], ['error', new Error('boom')]];
