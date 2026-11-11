@@ -81,7 +81,8 @@ class Connection extends EventEmitter {
     // a disconnected connection stays down (a connect already in flight is discarded below)
     if (this.#disconnected) return;
     if (!this.alive) {
-      this.emit('info', { message: 'Connecting', url: this.safeUrl})
+      // a throw here would break start(), or the retry timer that calls it
+      this.#report('info', { message: 'Connecting', url: this.safeUrl})
       amqplib.connect(this.url, {timeout: this.timeout ,clientProperties: {connection_name: this.connection_name}})
       .then((connection) => {
           if (this.#disconnected) return this.#discard(connection);

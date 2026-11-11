@@ -143,6 +143,41 @@ for (const [name, wire, warned] of catchRows) {
   });
 }
 
+// ---- the 'Connecting' info: a throw breaks neither start() nor the retry timer
+
+const connecting = fn => function (e) { if (e?.message === 'Connecting') fn(); };
+
+test('#90 a throwing Connecting listener: start() connects, the throw is reported', async t => {
+  const broker = fakeBroker(t);
+  const conn = new Connection('amqp://u:p@rabbit.example:5672/', { reconnectInterval: 1 });
+  const errors = [];
+  conn.on('info', connecting(boom('connecting bug')));
+  conn.on('error', e => errors.push(e));
+  t.after(() => conn.disconnect());
+  conn.start();
+  await turns(RETRY_TURNS);
+  assert.strictEqual(broker.open(), 1);
+  assert.strictEqual(conn.alive, true);
+  const got = errors.map(e => [e.error.message, e.url]);
+  assert.deepStrictEqual(got, [['connecting bug', SAFE_URL]]);
+});
+
+test('#90 a Connecting listener throwing on the retry: the reconnect happens', async t => {
+  const broker = fakeBroker(t);
+  const conn = new Connection('amqp://u:p@rabbit.example:5672/', { reconnectInterval: 1 });
+  let seen = 0;
+  conn.on('info', connecting(() => { if (++seen > 1) throw new Error('retry bug'); }));
+  conn.on('error', () => {});
+  t.after(() => conn.disconnect());
+  conn.start();
+  await turns(RETRY_TURNS);
+  broker.made[0].close();   // the broker closed it; the retry timer starts again
+  await turns(RETRY_TURNS);
+  assert.strictEqual(broker.made.length, 2);
+  assert.strictEqual(broker.open(), 1);
+  assert.strictEqual(conn.alive, true);
+});
+
 // ---- live broker
 
 const URL_ = process.env.FAMQP_TEST_URL;
