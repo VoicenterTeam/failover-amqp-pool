@@ -20,11 +20,14 @@ declare class AMQPPool extends EventEmitter {
     /** Retries cached messages, one per tick (default every 2000 ms). */
     start(msgCacheInterval?: number): void;
     /**
-     * Stops the retry timer, removes the pool's SIGINT listener and all its event listeners,
-     * and closes every connection. (A SIGINT stop gives the listeners the app had its one
-     * 'info' or 'error', then removes them too.) Takes no callback. Resolves, once each
-     * connection is closed and removed, with one entry per connection: its position when
-     * stop() began.
+     * Stops the retry timer, removes the pool's SIGINT listener and the listeners it added to
+     * its connections and channels, and closes every connection. The app's own listeners
+     * ('info', 'error' and any other) stay, and a stopped pool emits nothing more, so a
+     * teardown error is not heard. (A SIGINT stop gives those listeners its one 'info' or
+     * 'error'.) Takes no callback. Resolves, once each connection is closed and removed, with
+     * one entry per connection: its position when stop() began.
+     * A stopped pool is final: addConnection(), createConnection(), createChannel() and start()
+     * throw Error('Pool is stopped') after it.
      */
     stop(): Promise<number[]>;
     /** Adds the connections and channels of a config array; returns the new channels' ids. */

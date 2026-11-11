@@ -68,36 +68,30 @@ class AMQPPool extends EventEmitter {
   }
   #unwatch;
   // the pool's own SIGINT listener; stop() removes exactly this one
-  // Stops the pool and logs; the app owns the exit. stop() clears the pool's listeners, so the
-  // app's 'info' and 'error' ones are put back for the one log and taken off again. Nothing here
-  // may reject: a failure nobody hears, and a listener that throws, become process warnings.
+  // Stops the pool and logs; the app owns the exit. stop() keeps the app's listeners, so the
+  // app hears the one log. Nothing here may reject: a failure nobody hears, and a listener that
+  // throws, become process warnings.
   #onSigint = async () => {
-    // emitWarning throws on a value that is neither a string nor an Error
-    const warn = (value) => process.emitWarning(value instanceof Error ? value : String(value));
-    const stops = this.#stops;
-    const heard = { info: this.rawListeners('info'), error: this.rawListeners('error') };
+    // emitWarning throws on a value that is neither a string nor an Error, and String() throws
+    // on an object with no prototype or a toString that throws
+    // (instanceof runs a Proxy's getPrototypeOf trap, and emitWarning reads an Error's name)
+    const warn = (value) => {
+      try {
+        process.emitWarning(value instanceof Error ? value : String(value));
+      } catch {
+        process.emitWarning('unprintable value');
+      }
+    };
+    let failed = false;
     let failure;
     try {
       await this.stop();
     } catch (err) {
+      failed = true;
       failure = err;
     }
-    // another stop() ran meanwhile: the app stopped this pool, and has nothing to hear
-    if (this.#stops !== stops + 1) {
-      if (failure) warn(failure);
-      return;
-    }
-    const restored = [];
-    for (const event of Object.keys(heard)) {
-      for (const fn of heard[event]) {
-        if (this.rawListeners(event).includes(fn)) continue;
-        this.on(event, fn);
-        restored.push([event, fn]);
-      }
-    }
-    // stop() leaves one no-op 'error' listener of its own; with only that, nobody hears
-    if (failure && this.rawListeners('error').length <= 1) warn(failure);
-    const [event, payload] = failure ? ['error', failure] : ['info', 'Pool stopped on SIGINT'];
+    if (failed && this.listenerCount('error') === 0) warn(failure);
+    const [event, payload] = failed ? ['error', failure] : ['info', 'Pool stopped on SIGINT'];
     for (const fn of this.rawListeners(event)) {
       try {
         fn.call(this, payload);
@@ -105,9 +99,34 @@ class AMQPPool extends EventEmitter {
         warn(err);
       }
     }
-    for (const [name, fn] of restored) this.off(name, fn);
   };
-  #stops = 0;
+  // Listeners the pool put on its Connections and Channels, per emitter: what stop() takes off
+  #wired = new WeakMap();
+  #stopped = false;
+
+  // A stopped pool is final: it opens and creates nothing
+  #assertRunning() {
+    if (this.#stopped) throw new Error('Pool is stopped');
+  }
+
+  // Re-emits each of an emitter's events on the pool, until the pool is stopped
+  #forward(emitter, events) {
+    const added = events.map(([event, convert]) => {
+      const fn = (arg) => {
+        if (!this.#stopped) this.emit(event, convert ? convert(arg) : arg);
+      };
+      emitter.on(event, fn);
+      return [event, fn];
+    });
+    this.#wired.set(emitter, added);
+  }
+  // A stopped pool emits nothing, and its Connections and Channels still emit late errors,
+  // which with no listener would throw
+  #unwire(emitter) {
+    for (const [event, fn] of this.#wired.get(emitter) || []) emitter.off(event, fn);
+    this.#wired.delete(emitter);
+    emitter.on('error', () => {});
+  }
 
   // The pool's state for the observable counts; isAlive, as `alive` would re-create channels
   #reading() {
@@ -120,6 +139,7 @@ class AMQPPool extends EventEmitter {
     return { connections, channels, cached: this.msgCache.length };
   }
   start(msgCacheInterval = 2000) {
+    this.#assertRunning();
     this.interval = setInterval(() => {
       if (this.msgCache.length > 0 && this.getAllChannels().length > 0) {
         let m = this.msgCache.shift();
@@ -129,13 +149,15 @@ class AMQPPool extends EventEmitter {
   }
   
   async stop() {
-    this.#stops++;
+    this.#stopped = true;
     clearInterval(this.interval);
     process.off('SIGINT', this.#onSigint);
     this.#unwatch();
-    this.removeAllListeners();
     // a channel's error while the connections close is expected, and must not throw
-    this.on('error', () => {});
+    for (const connection of this.connections) {
+      for (const channel of connection.channels) this.#unwire(channel);
+      this.#unwire(connection);
+    }
     return Promise.all([...this.connections].map((connection, index) => new Promise((resolve) => {
       const removed = () => {
         const at = this.connections.indexOf(connection);
@@ -156,14 +178,8 @@ class AMQPPool extends EventEmitter {
     })));
   }
 
-  // Re-emits each of an emitter's events on the pool
-  #forward(emitter, events) {
-    for (const [event, convert] of events) {
-      emitter.on(event, (arg) => this.emit(event, convert ? convert(arg) : arg));
-    }
-  }
-
   addConnection(rawConfig) {
+    this.#assertRunning();
     let channelIds = []
     let config = _parsConfig(rawConfig);
     for (let _url in config) {
@@ -245,7 +261,7 @@ class AMQPPool extends EventEmitter {
       channel.publish(entry.msg, entry.topic, entry.props);
     } catch (e) {
       const refused = e instanceof RangeError;
-      if (reportError || refused) this.emit('error', e);
+      if ((reportError || refused) && !this.#stopped) this.emit('error', e);
       if (!refused) this.msgCache.push(entry);
     }
   }
@@ -262,7 +278,7 @@ class AMQPPool extends EventEmitter {
   // channel; the broker already requeued it
   #forChannelOf(msg, op) {
     const channels = this.getChannelById(msg.properties.channelId);
-    if (!channels.length) {
+    if (!channels.length && !this.#stopped) {
       this.emit('info', {
         message: `stale ${op} dropped`,
         messageId: msg.properties.messageId,
@@ -348,6 +364,7 @@ class AMQPPool extends EventEmitter {
   }
 
   createConnection(url, connectionConfig){
+    this.#assertRunning();
     let connection = new Connection(url, connectionConfig);
     this.#forward(connection, [
       ['close', () => connection.safeUrl],
@@ -361,6 +378,7 @@ class AMQPPool extends EventEmitter {
   }
 
   createChannel(connectionIndex, Channelconfig) {
+    this.#assertRunning();
     const connection = this.connections[connectionIndex]
     let channel = new Channel(connection, Channelconfig);
     this.#forward(channel, [

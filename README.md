@@ -590,15 +590,24 @@ or error text is recorded.
 
 A pool that is not stopped is still running and is still counted, so call `stop()` on a pool you
 discard. `stop()` also removes the pool's SIGINT listener, so a stopped pool can be collected.
+`stop()` keeps the listeners your app put on the pool (`'info'`, `'error'` and any other) and
+removes only the ones the pool added itself, on its connections and channels. A stopped pool
+emits nothing more: an error during teardown, or after `stop()`, is not heard by your `'error'`
+listener and does not throw.
+A stopped pool is final: `addConnection()`, `createConnection()`, `createChannel()` and
+`start()` throw `Error('Pool is stopped')` after `stop()`, and open nothing. Build a new pool instead.
 
 On SIGINT the pool stops itself and logs one `'info'` event (`'Pool stopped on SIGINT'`), or an
-`'error'` event with the error if `stop()` rejects. It does not exit: the app owns the exit.
+`'error'` event with the error if `stop()` rejects (also when it rejects with `null` or
+`undefined`). Your `'info'` and `'error'` listeners hear it, as `stop()` keeps them. It does not
+exit: the app owns the exit.
 Because `stop()` removed the pool's SIGINT listener, an app with no other SIGINT listener ends on
 a second Ctrl-C by Node's default (exit code 130). The app can also exit itself, and a process
 with nothing else holding its event loop ends by itself once the pool has stopped. To exit on
 SIGINT, call `process.exit()` in your own listener, or in an `'info'` handler that checks for
 `'Pool stopped on SIGINT'`, since other `'info'` events also arrive. A failure of `stop()` is a
-process warning when no `'error'` listener of yours hears it, and so is a listener that throws.
+process warning when no `'error'` listener of yours hears it, and so is a listener that throws,
+whatever it throws (a value that cannot be printed is warned about as `unprintable value`).
 
 The pm2 names map as: `rabbit_message_publish_rate` → `messaging.client.sent.messages`,
 `rabbit_message_consume_rate` → `messaging.client.consumed.messages`, `rabbit_message_ack_rate`
