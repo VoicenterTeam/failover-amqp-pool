@@ -152,6 +152,11 @@ Migrating:
   reads `e.err.code` on this one. A refusal the create recovers from (a durable exchange that is
   declared otherwise) is still reported once, as the broker's error. A connection that drops
   mid-create can add the channel's `'my connection is dead!!!'` before the wrapper.
+- A create the broker fails by closing the connection emits no `'cant establish a channel'`.
+  The connection's `'error'`, `{ error, url }`, one per refusal and carrying the url, is the one
+  report, and each create on that connection gets the `'channel create failed'` info. A socket
+  error or a heartbeat timeout still reports as before: the connection's `{ error, url }` plus
+  the create's own `'cant establish a channel'`.
 
 ## Installation
 
@@ -400,6 +405,11 @@ every publish and the channel's default options are left untouched. Options you 
 written to in place, so a pool retry of a cached message that had your options keeps its
 `messageId`; a message published without options gets a new id on each retry.
 
+A custom filter that returns a channel closed with `close()` sends nothing there and caches
+nothing for it: each closed channel it returns drops the message with one `'info'` event,
+`{ message: 'cached message dropped', messageId, channelId, reason: 'channel is closed' }`.
+A returned channel that is down but not closed keeps the message cached until it is alive again.
+
 ## Full Configuration Options
 
 ```javascript
@@ -523,7 +533,14 @@ amqp.on('close', (info) => {
 amqp.on('channelMessage', (msg) => {
   console.log('Message received:', msg.content.toString());
 });
+
+amqp.on('connection', (url) => {
+  console.log('Connected:', url);
+});
 ```
+
+`'connection'` fires on each connect and reconnect of a connection, with its url without the
+username and password.
 
 ### Health flag
 
