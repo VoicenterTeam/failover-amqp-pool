@@ -21,6 +21,10 @@ A robust AMQP client with connection pooling, automatic failover, and Winston tr
   `Channel` and `Connection` are in the `AMQPPool` namespace, `stop()` takes no callback and
   returns a promise, and `sendToQueue(queue, msg, options?)` is typed. See
   [TypeScript](#typescript).
+- `publish()` after `stop()` throws `Error('Pool is stopped')`, as `start()`, `addConnection()`,
+  `createConnection()` and `createChannel()` do. In 3.x it cached the message, sent nothing and
+  gave no signal. The pool stops itself on SIGINT, so an app that keeps publishing after Ctrl-C
+  or a process-manager stop must catch the throw.
 - `winston-transport` is an optional peer dependency, needed only for the Winston transport.
   `nanoid` is no longer a dependency; nothing used it.
 
@@ -478,6 +482,9 @@ const logger = winston.createLogger({
   ]
 });
 ```
+
+Once the transport's pool has stopped (on SIGINT, or `transport.client.stop()`), each log line
+prints `Pool is stopped` to stderr with `console.error`, and is not sent.
 
 ## Events
 
