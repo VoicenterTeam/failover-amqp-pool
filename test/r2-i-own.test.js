@@ -60,9 +60,10 @@ test('own() checks its arguments and names the bad one', async () => {
 
 // The file-level shape of #93: a row times out, then opens a handle that keeps the loop alive.
 test('a file whose row times out and then opens a handle still exits', async () => {
+  // run directly, not under --test: one process, so the kill below leaves no grandchild
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT;   // set by an outer node --test; the fixture runs on its own
-  const child = spawn(process.execPath, ['--test', FIXTURE], { stdio: 'ignore', env });
+  const child = spawn(process.execPath, [FIXTURE], { stdio: 'ignore', env });
   let timer;
   const hung = new Promise(resolve => { timer = setTimeout(resolve, 8000, 'hung'); });
   const ended = new Promise(resolve => child.on('exit', code => resolve({ code })));
