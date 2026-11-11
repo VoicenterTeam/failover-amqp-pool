@@ -598,7 +598,7 @@ started after the pool loads is picked up. The meter and the tracer are named
 | `amqp_pool.connection.errors` | counter | `{error}` | `messaging.system`, `server.address`, `server.port`, `error.type` (the broker's reply code, e.g. `320`, or the socket's, e.g. `ECONNREFUSED`) |
 | `amqp_pool.connection.reconnects` | counter | `{reconnect}` | `messaging.system`, `server.address`, `server.port` |
 | `amqp_pool.connection.count` | observable up-down counter | `{connection}` | `messaging.system`, `server.address`, `server.port`, `amqp_pool.state` (`alive`, `down`) |
-| `amqp_pool.channel.count` | observable up-down counter | `{channel}` | as above |
+| `amqp_pool.channel.count` | observable up-down counter | `{channel}` | as above; a server of the pool with no channel left reads 0 `alive` and 0 `down` |
 | `amqp_pool.message.cached` | observable up-down counter | `{message}` | `messaging.system` |
 | `publish {exchange}` | PRODUCER span | | as `sent.messages`; its context goes in the message headers; `sendToQueue`'s span injects it into its `options.headers` |
 | `process {queue}` | CONSUMER span | | as `consumed.messages`; parent is the context in the headers; active while the `'message'` listeners run synchronously |

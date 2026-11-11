@@ -72,17 +72,21 @@ function instruments() {
 function observe(result, connections, channels, cached) {
   const counts = { connections: new Map(), channels: new Map() };
   let waiting = 0;
-  const tally = (map, url, alive) => {
+  const row = (map, url) => {
     const server = serverAttributes(url);
     const key = JSON.stringify(server);
-    const row = map.get(key) || { server, alive: 0, down: 0 };
-    row[alive ? 'alive' : 'down']++;
-    map.set(key, row);
+    if (!map.has(key)) map.set(key, { server, alive: 0, down: 0 });
+    return map.get(key);
   };
+  const tally = (map, url, alive) => { row(map, url)[alive ? 'alive' : 'down']++; };
   for (const read of pools) {
     try {
       const reading = read();
-      reading.connections.forEach(c => tally(counts.connections, c.url, c.alive));
+      reading.connections.forEach(c => {
+        tally(counts.connections, c.url, c.alive);
+        // a server with no channel left reads 0, or the SDK keeps repeating its last count
+        row(counts.channels, c.url);
+      });
       reading.channels.forEach(c => tally(counts.channels, c.url, c.alive));
       waiting += reading.cached;
     } catch {
