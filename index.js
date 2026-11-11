@@ -245,6 +245,11 @@ class AMQPPool extends EventEmitter {
     this.#assertRunning();
     const notes = [];
     const { keep } = this.#attempt({ msg, filter, topic, props }, null, notes);
+    // with nobody listening, the 'error' throws to the caller, as it always did, and nothing is
+    // cached: a caller that publishes again then sends the message once
+    if (this.listenerCount('error') === 0 && notes.some(([event]) => event === 'error')) {
+      return this.#notify(notes);
+    }
     for (const entry of keep) this.#cache(entry);
     this.#notify(notes);
   }
