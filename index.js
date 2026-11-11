@@ -68,11 +68,23 @@ class AMQPPool extends EventEmitter {
   }
   #unwatch;
   // the pool's own SIGINT listener; stop() removes exactly this one
-  #onSigint = () => {
-    this.stop((err) =>  {
-      this.emit('info', "Exit on SIGINT")
-      process.exit(err ? 1 : 0);
-    })
+  // Stops the pool and logs; the app owns the exit. stop() clears the pool's listeners, so the
+  // app's 'info' and 'error' ones are put back to hear the outcome. Nothing here may reject.
+  #onSigint = async () => {
+    const heard = { info: this.rawListeners('info'), error: this.rawListeners('error') };
+    let failure;
+    try {
+      await this.stop();
+    } catch (err) {
+      failure = err;
+    }
+    for (const event of Object.keys(heard)) for (const fn of heard[event]) this.on(event, fn);
+    try {
+      if (failure) this.emit('error', failure);
+      else this.emit('info', 'Pool stopped on SIGINT');
+    } catch (_) {
+      // a listener that throws is the app's to fix, and must not become an unhandled rejection
+    }
   };
 
   // The pool's state for the observable counts; isAlive, as `alive` would re-create channels
