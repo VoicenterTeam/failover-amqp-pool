@@ -25,6 +25,7 @@ class Channel extends EventEmitter {
   #retryDelay = 0;
   #temporaryQueue = false;
   #createFailure = null;   // the channel error a create in flight holds back for its own report
+  #connectionFailure = null;   // the connection error that ended a create in flight
   constructor(connection, channelConfig) {
     super();
     this.hash = hash(channelConfig)
@@ -154,6 +155,13 @@ class Channel extends EventEmitter {
       return Promise.resolve(false);   // already closed
     }
   }
+  // The connection's error while a create is in flight: the broker closed the connection, which
+  // fails the create, and the create reports it as its own failure, once. True when taken.
+  _holdConnectionError(error){
+    if (!this.#isConnecting || this.#closed) return false;
+    this.#connectionFailure ??= error;
+    return true;
+  }
   #createID(){
     return `${os.hostname}.${uuid()}`
   }
@@ -221,6 +229,7 @@ class Channel extends EventEmitter {
     clearTimeout(this.#retryTimer);
     this.#retryTimer = null;
     this.#createFailure = null;
+    this.#connectionFailure = null;
     let created = false;
     this.#createChannel()
     .then(() => {
@@ -267,15 +276,19 @@ class Channel extends EventEmitter {
         })
         .catch((err) => {
           if (this.#closed) return;   // its create was cut short by the close: no error to report
-          this.emit('error', {message: 'cant establish a channel', err: err});
+          // a connection closed by the broker rejects the call with a generic error: the
+          // refusal is the connection's
+          const cause = this.#connectionFailure ?? err;
+          this.emit('error', {message: 'cant establish a channel', err: cause});
           this.emit('info', {
             message: 'channel create failed', channelId: this._id,
-            queue: this.queue?.name, exchange: this.exchange?.name, error: err?.message
+            queue: this.queue?.name, exchange: this.exchange?.name, error: cause?.message
           });
           this.alive = false;
           return this.connection
         }).finally( _ => {
           this.#isConnecting = false;
+          this.#connectionFailure = null;
           // an error the create held back and then went on past (a recovered durable escape)
           const held = this.#createFailure;
           this.#createFailure = null;

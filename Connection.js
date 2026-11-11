@@ -73,6 +73,9 @@ class Connection extends EventEmitter {
           });
           this.amqpConnection.on('error', (error) => {
             countConnectionError(this.url, error);
+            // a create in flight reports it as its own failure, once (#63): the close fails it
+            const held = this.channels.filter(channel => channel._holdConnectionError?.(error));
+            if (held.length) return;
             this.emit('error', { error: error , url: this.safeUrl})
           });
           this.alive = true;
