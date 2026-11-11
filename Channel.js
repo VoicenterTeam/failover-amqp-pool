@@ -45,7 +45,8 @@ class Channel extends EventEmitter {
     
 
     if (channelConfig.hasOwnProperty('prefetch')  && channelConfig.prefetch) {
-      this.prefetch = !isNaN(parseInt(channelConfig.prefetch)) ? parseInt(channelConfig.prefetch) : false;
+      const prefetch = parseInt(channelConfig.prefetch);
+      this.prefetch = !isNaN(prefetch) ? prefetch : false;
     }
   }
   // The exchange as telemetry names it: the configured one. A per-call exchange that differs is
@@ -99,7 +100,8 @@ class Channel extends EventEmitter {
   get queueOptions(){
     let messageTtl = 3600000;
     if(this?.queue?.options?.messageTtl === 'none') messageTtl = undefined
-    if(Number.isInteger(this?.queue?.options?.messageTtl)) messageTtl = this?.queue?.options?.messageTtl
+    if(Number.isInteger(this?.queue?.options?.messageTtl))
+      messageTtl = this?.queue?.options?.messageTtl
 
     // A queue the channel names for itself would outlive its consumer: it expires after 30
     // minutes unused unless queue.options.expires says otherwise ('none' keeps it). Named
@@ -187,7 +189,10 @@ class Channel extends EventEmitter {
             // it next, so it is not an error. Any other 404 on this channel still is.
             if (err?.code === 404 && this.#checking === amqpChannel) {
               expectedClose = true;
-              this.emit('info', {message: 'queue not found, declaring it', queue: this.queue?.name, channelId: this._id});
+              this.emit('info', {
+                message: 'queue not found, declaring it',
+                queue: this.queue?.name, channelId: this._id
+              });
               return;
             }
             // a create in flight reports its failure once, from its catch: the call this error
@@ -220,7 +225,9 @@ class Channel extends EventEmitter {
     this.#createChannel()
     .then(() => {
           if (this?.exchange?.name && this?.exchange?.type) {
-            return this.amqpChannel.assertExchange(this.exchange.name, this.exchange.type, this.exchangeOptions).catch( error => {
+            const { name, type } = this.exchange;
+            const asserted = this.amqpChannel.assertExchange(name, type, this.exchangeOptions);
+            return asserted.catch( error => {
               if(error.code === 406 && error.classId === 40){
                 this.emit('info', {message: `Durable Escape for connect`})
                 // the escape recovers from this error: it is reported here, not lost to a
@@ -249,7 +256,8 @@ class Channel extends EventEmitter {
           // a dynamic queue is bound by its first consume; a new connection lost it with the old
           const bind = this?.binding?.enabled || this.#temporaryQueue;
           if (bind && this?.queue?.name && this?.exchange?.name) {
-            return this.#bindQueue(this.queue.name, this.exchange.name, this?.binding?.pattern || '', this?.binding?.options || {});
+            return this.#bindQueue(this.queue.name, this.exchange.name,
+              this?.binding?.pattern || '', this?.binding?.options || {});
           }
           return true;
         })
@@ -260,7 +268,10 @@ class Channel extends EventEmitter {
         .catch((err) => {
           if (this.#closed) return;   // its create was cut short by the close: no error to report
           this.emit('error', {message: 'cant establish a channel', err: err});
-          this.emit('info', {message: 'channel create failed', channelId: this._id, queue: this.queue?.name, exchange: this.exchange?.name, error: err?.message});
+          this.emit('info', {
+            message: 'channel create failed', channelId: this._id,
+            queue: this.queue?.name, exchange: this.exchange?.name, error: err?.message
+          });
           this.alive = false;
           return this.connection
         }).finally( _ => {
@@ -274,11 +285,13 @@ class Channel extends EventEmitter {
           if (this.#closed) return;
           if (!created) {
             try { this.amqpChannel?.close()?.catch?.(() => {}); } catch (e) {}   // already closed
-            // retry while the connection is up; a dead connection re-creates its channels on reconnect.
-            // The wait doubles per consecutive failure, from reconnectInterval up to channelRetryMaxInterval.
+            // retry while the connection is up; a dead connection re-creates its channels on
+            // reconnect. The wait doubles per consecutive failure, from reconnectInterval up to
+            // channelRetryMaxInterval.
             if (this.connection.alive) {
               const max = this.connection.config?.channelRetryMaxInterval || 30000;
-              const delay = Math.min(this.#retryDelay || this.connection.reconnectInterval || 1500, max);
+              const first = this.connection.reconnectInterval || 1500;
+              const delay = Math.min(this.#retryDelay || first, max);
               this.#retryDelay = Math.min(delay * 2, max);
               this.#retryTimer = setTimeout(() => {
                 this.#retryTimer = null;
@@ -303,7 +316,8 @@ class Channel extends EventEmitter {
   }
   #createQueue(queue, options){
       // the amqplib channel whose passive check is in flight: its 404 is the expected answer
-      const checked = this.#checking = this.amqpChannel;
+      const checked = this.amqpChannel;
+      this.#checking = checked;
       return checked.checkQueue(queue).finally(() => {
         if (this.#checking === checked) this.#checking = null;
       }).then(assertion => {
@@ -355,11 +369,17 @@ class Channel extends EventEmitter {
           countSent(this.connection.url, named, thrownType(error));
           throw error;
         }
-        this.emit("info", { message: 'message published', options: options, exchange: options.exchange || this.exchange, url: this.connection.safeUrl})
+        this.emit("info", {
+          message: 'message published', options: options,
+          exchange: options.exchange || this.exchange, url: this.connection.safeUrl
+        })
         countSent(this.connection.url, named);
       } else {
         countSent(this.connection.url, this.#exchangeName(options), 'channel_dead');
-        this.emit('error', {message: 'channel is dead!', channelId: this._id, queue: this.queue?.name, exchange: this.exchange?.name})
+        this.emit('error', {
+          message: 'channel is dead!', channelId: this._id,
+          queue: this.queue?.name, exchange: this.exchange?.name
+        })
         throw new Error('Channel is dead!')
       }
     }
@@ -371,7 +391,8 @@ class Channel extends EventEmitter {
         this.#temporaryQueue = true;
         // it names the queue itself, so it declares it directly: a passive check of a new name
         // gets a 404 that closes the channel, and the consume would find the channel dead
-        this.amqpChannel.assertQueue(`${this._id}:${os.hostname}`, this.queueOptions).then( asserted => {
+        const dynamicName = `${this._id}:${os.hostname}`;
+        this.amqpChannel.assertQueue(dynamicName, this.queueOptions).then( asserted => {
           const name = asserted?.queue;
           if(!name){
             this.emit('error', {message: 'dynamic queue has no name', channelId: this._id})
@@ -380,7 +401,9 @@ class Channel extends EventEmitter {
           this.queue.name = name
           this.emit('info', `Queue created dynamic: ${this.queue.name}`)
           // returned, so a refused bind reaches the catch below as an error event
-          return Promise.resolve(this.#bindQueue(this.queue.name, this.exchange.name, this?.binding?.pattern || '', this?.binding?.options || {})).then( () => {
+          const bound = this.#bindQueue(this.queue.name, this.exchange.name,
+            this?.binding?.pattern || '', this?.binding?.options || {});
+          return Promise.resolve(bound).then( () => {
             this.emit('info', {message: `consume from queue: ${this.queue.name}`})
             this.consume();
           });
@@ -388,9 +411,11 @@ class Channel extends EventEmitter {
           this.emit('error', e)
         })
       }else {
-        // already consuming here: the same consumerTag twice would make the broker close the channel
+        // already consuming here: the same consumerTag twice would make the broker close the
+        // channel
         if (this.#consumingOn === this.amqpChannel) return;
-        const amqpChannel = this.#consumingOn = this.amqpChannel;
+        const amqpChannel = this.amqpChannel;
+        this.#consumingOn = amqpChannel;
         this.emit('info', {message: `consume started on queue: ${queue}`})
         this.amqpChannel.consume(this.queue.name, (m) => {
           if (m == null) {
@@ -406,7 +431,8 @@ class Channel extends EventEmitter {
             deliveredOn.set(m, amqpChannel);
             m.properties.channelId = this._id;
             if(!m.properties.messageId) m.properties.messageId = uuid();
-            if(!m.properties.timestamp) m.properties.timestamp = Math.round(new Date().getTime()/1000);
+            if(!m.properties.timestamp)
+              m.properties.timestamp = Math.round(new Date().getTime()/1000);
             m.properties.queue = this.queue.name;
             
             countConsumed(this.connection.url, this.#destination);
@@ -416,11 +442,17 @@ class Channel extends EventEmitter {
             });
           }
         }, {consumerTag: this._id}).catch(err => {
-          this.emit('error', {message: 'consume failed', channelId: this._id, queue: this.queue?.name, error: err?.message});
+          this.emit('error', {
+            message: 'consume failed', channelId: this._id,
+            queue: this.queue?.name, error: err?.message
+          });
         });
       }
     } else {
-      this.emit('error', {message: 'channel is dead!', channelId: this._id, queue: this.queue?.name, exchange: this.exchange?.name})
+      this.emit('error', {
+        message: 'channel is dead!', channelId: this._id,
+        queue: this.queue?.name, exchange: this.exchange?.name
+      })
     }
   }
 
@@ -430,14 +462,20 @@ class Channel extends EventEmitter {
       let timestamp = msg?.properties?.timestamp || msg?.timestamp;
       let deliveryTag = msg?.fields?.deliveryTag;
       if(!this.alive){
-        this.emit('error', {message: 'channel is dead!', channelId: this._id, queue: this.queue?.name, exchange: this.exchange?.name});
+        this.emit('error', {
+          message: 'channel is dead!', channelId: this._id,
+          queue: this.queue?.name, exchange: this.exchange?.name
+        });
       }
       else if(this.#isStale(msg, 'ack')) return;
       else if(deliveryTag){
         this.amqpChannel.ack(msg);
         countSettled(this.connection.url, 'ack', this.#destination);
       }else {
-        this.emit('error', {message: `DELIVERY TAG NOT FOUND ${messageId}`, channelId: this._id, queue: this.queue?.name, exchange: this.exchange?.name, messageId});
+        this.emit('error', {
+          message: `DELIVERY TAG NOT FOUND ${messageId}`, channelId: this._id,
+          queue: this.queue?.name, exchange: this.exchange?.name, messageId
+        });
       }
     }
   }
