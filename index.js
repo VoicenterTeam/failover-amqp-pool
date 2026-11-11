@@ -5,6 +5,11 @@ const { watchPool } = require('./telemetry/metrics');
 // Filters built by #onlyChannel: their failed retries stay silent, as an 'all' publish is.
 const retryFilters = new WeakSet();
 
+// How many times a message a Channel hands back is sent again before the pool drops it
+const MAX_RESENDS = 5;
+// The longest confirmTimeout stop() takes, ms: setTimeout's own limit
+const MAX_WAIT = 2147483647;
+
 // A process warning for a value nobody else will hear, which must not throw itself.
 // emitWarning throws on a value that is neither a string nor an Error, and String() throws
 // on an object with no prototype or a toString that throws
@@ -115,6 +120,8 @@ class AMQPPool extends EventEmitter {
   #stopped = false;
   // Per cached entry, the channels it is done with: they took its message, or are closed
   #done = new WeakMap();
+  // While stop() waits for confirms: what the channels hand back, for its one report
+  #atStop = null;
 
   // A stopped pool is final: it opens, creates and sends nothing. The code lets a caller match
   // the error without its text.
@@ -131,7 +138,12 @@ class AMQPPool extends EventEmitter {
       emitter.on(event, fn);
       return [event, fn];
     });
-    this.#wired.set(emitter, added);
+    this.#wired.set(emitter, [...(this.#wired.get(emitter) || []), ...added]);
+  }
+  // A listener of the pool's own on an emitter, which stop() takes off with the forwarded ones
+  #wire(emitter, event, fn) {
+    emitter.on(event, fn);
+    this.#wired.set(emitter, [...(this.#wired.get(emitter) || []), [event, fn]]);
   }
   // A stopped pool emits nothing, and its Connections and Channels still emit late errors,
   // which with no listener would throw
@@ -188,11 +200,20 @@ class AMQPPool extends EventEmitter {
     this.#tell(notes);
   }
   
-  async stop() {
+  // Waits up to confirmTimeout ms for the broker to confirm what the channels hold, then reports
+  // what is still unconfirmed once, and closes. A bad confirmTimeout rejects before anything
+  // stops.
+  async stop({ confirmTimeout = 5000 } = {}) {
+    if (!Number.isInteger(confirmTimeout) || confirmTimeout < 0 || confirmTimeout > MAX_WAIT) {
+      const got = typeof confirmTimeout === 'number' ? confirmTimeout : typeof confirmTimeout;
+      throw new TypeError('stop: confirmTimeout must be a whole number from 0 to ' +
+        `${MAX_WAIT}, got ${got}`);
+    }
     this.#stopped = true;
     clearInterval(this.interval);
     process.off('SIGINT', this.#onSigint);
     this.#unwatch();
+    await this.#waitConfirmed(confirmTimeout);
     // a channel's error while the connections close is expected, and must not throw
     for (const connection of this.connections) {
       for (const channel of connection.channels) this.#unwire(channel);
@@ -318,7 +339,9 @@ class AMQPPool extends EventEmitter {
         continue;
       }
       try {
-        channel.publish(entry.msg, entry.topic, entry.props);
+        // an entry a Channel handed back goes out as it was first sent, counted
+        if (entry.method) channel.resend(entry);
+        else channel.publish(entry.msg, entry.topic, entry.props);
         doneNow.push(channel);
       } catch (e) {
         const refused = e instanceof RangeError;
@@ -335,15 +358,64 @@ class AMQPPool extends EventEmitter {
     return [entry];
   }
 
+  // stop()'s wait: every channel at once, each bounded by ms. A hand-back while it waits is
+  // collected with the leftovers, and all of it is reported once: one 'unconfirmed' with the
+  // entries, each with its channelId, and one 'info' with the count.
+  async #waitConfirmed(ms) {
+    const report = [];
+    this.#atStop = report;
+    const tagged = channel => entries => entries.map(e => ({ ...e, channelId: channel._id }));
+    // a channel object the app put in a connection's list itself may not have waitConfirmed
+    const holding = this.getAllChannels().filter(c => typeof c?.waitConfirmed === 'function');
+    const left = await Promise.all(holding.map(channel =>
+      channel.waitConfirmed(ms).then(tagged(channel))));
+    // a hand-back scheduled with the confirm that settled the wait comes on this tick
+    await new Promise(resolve => process.nextTick(resolve));
+    this.#atStop = null;
+    report.push(...left.flat());
+    if (report.length === 0) return;
+    this.#tell([['unconfirmed', report],
+      ['info', { message: 'unconfirmed messages at stop', count: report.length }]], true);
+  }
+
+  // A Channel's 'unconfirmed' entries: cached for start()'s tick, which sends each again on that
+  // channel only. A channel closed with close() takes nothing, and a message sent again
+  // MAX_RESENDS times is dropped, so one the broker always refuses does not go round forever.
+  #unconfirmed(channel, entries) {
+    if (this.#atStop) {
+      this.#atStop.push(...entries.map(e => ({ ...e, channelId: channel._id })));
+      return;
+    }
+    if (this.#stopped) return;
+    const notes = [];
+    for (const entry of entries) {
+      const drop = channel.isClosed ? 'channel is closed'
+        : entry.attempts >= MAX_RESENDS ? 're-publish limit reached' : null;
+      if (!drop) {
+        this.#cache({ ...entry, filter: this.#onlyChannel(channel, entry.props) });
+        continue;
+      }
+      const info = { message: 'cached message dropped', messageId: entry.props?.messageId,
+        channelId: channel._id, reason: drop };
+      if (drop !== 'channel is closed') {
+        Object.assign(info, { attempts: entry.attempts, lastReason: entry.reason,
+          cause: entry.cause });
+      }
+      notes.push(['info', info]);
+    }
+    this.#tell(notes);
+  }
+
   #notify(notes) {
     for (const [event, payload] of notes) if (!this.#stopped) this.emit(event, payload);
   }
 
   // The tick's events. The tick runs in a timer, where a throw would end the process, so an
-  // 'error' nobody listens to becomes a process warning, and so does a listener's throw.
-  #tell(notes) {
+  // 'error' nobody listens to becomes a process warning, and so does a listener's throw. stop()'s
+  // own report goes out after the pool is stopped.
+  #tell(notes, stopping = false) {
     for (const [event, payload] of notes) {
-      if (this.#stopped) return;
+      if (this.#stopped && !stopping) return;
       if (event === 'error' && this.listenerCount('error') === 0) warn(payload);
       for (const fn of this.rawListeners(event)) {
         try {
@@ -509,6 +581,7 @@ class AMQPPool extends EventEmitter {
     this.#forward(channel, [
       ['ready'], ['recreated'], ['close'], ['error'], ['channelMessage'], ['info']
     ]);
+    this.#wire(channel, 'unconfirmed', entries => this.#unconfirmed(channel, entries));
     connection.addChannel(channel);
     if(connection.alive)
     channel.create();

@@ -96,7 +96,7 @@ test('pool: a pool info listener that throws after the send caches nothing, send
     const pool = new AMQPPool([{ connection: { host: 'rabbit.example', port: 5672 },
       channel: { exchange: { name: 'x' } } }]);
     pool.on('error', () => {});
-    t.after(() => pool.stop());
+    t.after(() => pool.stop({ confirmTimeout: 0 }));
     for (let i = 0; i < 50 && pool.getAliveChannels().length < 1; i++) await tick();
     pool.on('info', i => { if (i?.message === 'message published') throw new Error('bug'); });
     for (const n of [1, 2, 3]) pool.publish({ n });
