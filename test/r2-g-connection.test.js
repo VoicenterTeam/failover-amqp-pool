@@ -113,6 +113,36 @@ for (const [name, wire, warned] of rows) {
   });
 }
 
+// ---- the connect catch: a failed connect retries whatever the 'error' listener does
+
+// amqplib.connect rejects the first `fails` calls, then resolves fake connections
+function flakyBroker(t, fails) {
+  const broker = fakeBroker(t);
+  const resolve = amqplib.connect;
+  let calls = 0;
+  amqplib.connect = () => (++calls <= fails ? Promise.reject(new Error('refused')) : resolve());
+  return { ...broker, calls: () => calls };
+}
+const catchRows = [
+  ['the error listener throws', conn => conn.on('error', boom('error bug')), [['error bug']]],
+  ['no error listener', () => {}, [['ERR_UNHANDLED_ERROR', 'refused']]],
+];
+for (const [name, wire, warned] of catchRows) {
+  test(`#90 failed connect, ${name}: the retry connects`, async t => {
+    const broker = flakyBroker(t, 1);
+    const warnings = captureWarnings(t);
+    const conn = new Connection('amqp://u:p@rabbit.example:5672/', { reconnectInterval: 1 });
+    wire(conn);
+    t.after(() => conn.disconnect());
+    conn.start();
+    await turns(RETRY_TURNS);
+    assert.strictEqual(broker.calls(), 2);
+    assert.strictEqual(broker.open(), 1);
+    assert.strictEqual(conn.alive, true);
+    assert.deepStrictEqual(warnings.map(fields), warned);
+  });
+}
+
 // ---- live broker
 
 const URL_ = process.env.FAMQP_TEST_URL;

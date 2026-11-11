@@ -111,7 +111,8 @@ class Connection extends EventEmitter {
         .catch((error) => {
           this.alive = false;
           countConnectionError(this.url, error);
-          this.emit('error', { error: error , url: this.safeUrl})
+          // the retry is scheduled whatever the 'error' listener does
+          this.#report('error', { error: error , url: this.safeUrl})
           this.#scheduleRetry();
         });
     }
