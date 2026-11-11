@@ -1,6 +1,6 @@
 // stop() removes the pool's own SIGINT listener, and only that one. No broker: the pools point
 // at a closed local port and are stopped at once.
-const { test } = require('node:test');
+const { test, after } = require('node:test');
 const assert = require('node:assert');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
@@ -9,13 +9,15 @@ const amqplib = require('amqplib');
 const AMQPPool = require('..');
 const Connection = require('../Connection');
 const { FakeAmqpChannel } = require('./helpers/fakes');
+const { MGMT, mgmt, until, queuePath, queueInfo } = require('./helpers/mgmt');
+const { leftovers } = require('./helpers/leak-guard');
 
 const count = () => process.listenerCount('SIGINT');
 // Every pool is stopped after its test, so a red run leaves no reconnect timer behind.
-const build = (t, name, connection = { host: '127.0.0.1', port: 1 }) => {
+const build = (t, name, connection = { host: '127.0.0.1', port: 1 }, options) => {
   const pool = new AMQPPool([{
     connection: { ...connection, reconnectInterval: 60000 },
-    channel: { queue: { name } }
+    channel: { queue: { name, options } }
   }]);
   pool.on('error', () => {});
   t.after(() => pool.stop().catch(() => {}));
@@ -104,18 +106,33 @@ test('stop() that rejects on a throwing disconnect still removes the listener', 
 });
 
 const LIVE = process.env.FAMQP_TEST_URL;
+const STARTED = Date.now();   // the live row's queue carries -<pid>-<ms>, ms from here on
 test('stop() of a pool on the live broker removes its SIGINT listener',
   { skip: LIVE ? false : 'FAMQP_TEST_URL not set' }, async (t) => {
     const u = new URL(LIVE);
     const before = count();
-    const pool = build(t, `sigint-live-${process.pid}-${Date.now()}`, {
+    const queue = `famqp-sigint-live-${process.pid}-${Date.now()}`;
+    // #92: exclusive, so the broker deletes it with the pool's connection however the row ends
+    const pool = build(t, queue, {
       host: u.hostname, port: Number(u.port), ssl: false,
       username: decodeURIComponent(u.username), password: decodeURIComponent(u.password)
-    });
+    }, { exclusive: true, durable: false });
     await connected(pool);
+    // the connection is up before the channel declares the queue: wait for the declare
+    if (MGMT) await queueInfo(queue);
     await pool.stop();
     assert.strictEqual(count(), before);
+    // the broker deletes an exclusive queue as it closes the connection: 50 polls of 100 ms
+    const gone = async () => (await mgmt('GET', queuePath(queue))) === null;
+    if (MGMT) await until(gone, `${queue} to go with the pool's connection`, 50);
   });
+
+// #65 for this file: no famqp- queue or exchange this run declared is left on the broker
+after(async () => {
+  if (!LIVE || !MGMT) return;
+  const left = await leftovers(p => mgmt('GET', p), { pid: process.pid, since: STARTED });
+  assert.deepStrictEqual(left, []);
+});
 
 // SIGINT stops the pool and the app owns the exit (see sigint-log.test.js). This row pins that
 // the pool stops: the child exits 7 itself once the pool has no connections.
