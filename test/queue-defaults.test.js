@@ -332,11 +332,16 @@ test('#78 a wait for ready that gives up carries the pool events it saw', async 
   assert.deepStrictEqual(gaveUp.events, events);
 });
 
-// The quorum row's window (#78). Declare-to-ready measured on 3.13.7 and 4.3.7, n=20 alone and
-// n=30 beside a full suite run each: p99 146 / 133 ms alone, 171 / 242 ms under the suite. The
-// one recorded timeout waited over 9 s, 37 times that p99, so the window is the worst p99 times
-// a margin of 50: 12.1 s, 121 polls of 100 ms. A give-up names the pool's events (above).
+// The quorum rows' window (#78). Declare-to-ready, measured on 3.13.7 and 4.3.7 with
+// `node test/helpers/quorum-ready-time.js <amqp url> <runs>`, n=20 alone and n=30 while
+// `npm test` ran with both URLs on the same broker: p99 146 / 133 ms alone, 171 / 242 ms loaded.
+// The latency alone asks for a second or so. The one recorded timeout waited over 9 s, 37 times
+// the worst p99, so latency does not explain it, and the window is a floor set above that one
+// failure: 50 times the worst p99, the round margin above 37, 12.1 s, 121 polls of 100 ms. A
+// give-up names the pool's events (above), which is what tells the next failure's cause.
 const QUORUM_READY_POLLS = 121;
+// a row with two such waits, plus 10 s for its own steps and cleanup
+const QUORUM_ROW_TIMEOUT = 2 * QUORUM_READY_POLLS * 100 + 10000;
 
 test('live: a named queue that does not exist is declared durable, with no consumer timeout',
   { skip: skipLive }, async t => {
@@ -366,7 +371,7 @@ test('live: a dynamic queue that does not exist is declared exclusive, transient
 });
 
 test('live: a quorum queue that does not exist is declared durable, x-consumer-timeout 7200000',
-  { skip: skipLive, timeout: QUORUM_READY_POLLS * 100 + 10000 }, async t => {
+  { skip: skipLive, timeout: QUORUM_ROW_TIMEOUT }, async t => {
   const name = unique('quorum');
   const { pool, events } = await livePool(t,
     { prefetch: 5, queue: { name, options: { arguments: { 'x-queue-type': 'quorum' } } } },
@@ -380,13 +385,14 @@ test('live: a quorum queue that does not exist is declared durable, x-consumer-t
 });
 
 test('live: a dynamic quorum queue is declared from nothing, durable, and consumes',
-  { skip: skipLive }, async t => {
+  { skip: skipLive, timeout: QUORUM_ROW_TIMEOUT }, async t => {
   const conf = { prefetch: 5, queue: { options: { arguments: { 'x-queue-type': 'quorum' } } } };
-  const { pool, adminCh, exchange } = await livePool(t, conf);
-  const ch = await readyChannel(pool);
+  const { pool, adminCh, exchange, events } = await livePool(t, conf);
+  const ch = await readyOrEvents(pool, events, QUORUM_READY_POLLS);
   const bodies = [];
   ch.on('message', m => { bodies.push(m.content.toString()); ch.ack(m); });
-  const done = consuming(ch);
+  const isConsume = i => i?.message?.startsWith?.('consume from queue');
+  const done = orEvents(waitEvent(ch, 'info', isConsume, QUORUM_READY_POLLS), events);
   ch.consume();
   await done;
   t.after(() => mgmt('DELETE', queuePath(ch.queue.name)));
