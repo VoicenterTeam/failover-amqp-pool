@@ -224,25 +224,37 @@ test('#90 an Error whose message getter throws: warned as unprintable, exit 0', 
 const URL_ = process.env.FAMQP_TEST_URL;
 const skipLive = !URL_ ? 'FAMQP_TEST_URL not set' : !MGMT ? 'FAMQP_TEST_MGMT_URL not set' : false;
 
-test('#90 live: a throwing info listener leaves 1 broker connection by its name',
-  { skip: skipLive }, async t => {
-  const name = `r2-g-conn-${process.pid}-${Date.now()}`;
+// the broker's open connections by this name, at each of a pinned count of reads
+async function openPerRead(name, reads = 30) {
+  const counts = [];
+  for (let i = 0; i < reads; i++) {
+    const all = await mgmt('GET', 'connections');
+    counts.push(all.filter(c => c.client_properties?.connection_name === name).length);
+    await new Promise(r => setTimeout(r, 100));
+  }
+  return counts;
+}
+
+// a live Connection whose 'info' listener throws on connect; errors collects its reports
+function startLive(t, name) {
   const conn = new Connection(URL_, { reconnectInterval: 20, connection_name: name });
   const errors = [];
   conn.on('info', created(boom('info bug')));
   conn.on('error', e => errors.push(e));
   t.after(() => conn.disconnect());
   conn.start();
+  return { conn, errors };
+}
+
+test('#90 live: a throwing info listener leaves 1 broker connection by its name',
+  { skip: skipLive }, async t => {
+  const name = `r2-g-conn-${process.pid}-${Date.now()}`;
+  const { conn, errors } = startLive(t, name);
   const full = `${name}_${os.hostname}`;
   await connectionNamed(full);
   await until(() => errors.length >= 1, 'the info throw reported', 100);
-  // a pinned count of reads: each retry, had there been one, opens another within 20 ms
-  const counts = [];
-  for (let i = 0; i < 30; i++) {
-    const all = await mgmt('GET', 'connections');
-    counts.push(all.filter(c => c.client_properties?.connection_name === full).length);
-    await new Promise(r => setTimeout(r, 100));
-  }
+  // each retry, had there been one, opens another within 20 ms
+  const counts = await openPerRead(full);
   assert.deepStrictEqual([...new Set(counts)], [1], `open per read: ${counts}`);
   assert.strictEqual(conn.alive, true);
 });
