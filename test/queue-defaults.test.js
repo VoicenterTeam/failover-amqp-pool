@@ -29,6 +29,9 @@ async function ready(config) {
       createConfirmChannel: () => {
         const c = new FakeAmqpChannel();
         c.strictQueues = true;
+        c.binds = 0;
+        const bind = c.bindQueue.bind(c);
+        c.bindQueue = (...a) => { c.binds++; return bind(...a); };
         amqp.push(c);
         return Promise.resolve(c);
       },
@@ -44,7 +47,7 @@ async function ready(config) {
 }
 
 // the options the channel declares a named queue with
-async function declaredNamed(options, queue = {}) {
+async function declaredNamed(options) {
   const { fake } = await ready({ exchange: { name: 'events' }, queue: { name: 'work', options } });
   return fake().asserted.options;
 }
@@ -132,6 +135,47 @@ test('#53 a re-create declares the dynamic queue again, exclusive, bound, consum
   assert.strictEqual(now.asserted.options.durable, false);
   assert.deepStrictEqual(now.bound, { queue: name, exchange: 'events', pattern: 'rk' });
   assert.strictEqual(now.consumers.length, 1);
+});
+
+// ---- the bind on a re-create belongs to the dynamic queue only
+
+const recreateOnce = async (channel, fake) => {
+  const done = created(channel);
+  fake().close();
+  channel.alive;
+  await done;
+};
+const allBinds = amqp => amqp.reduce((n, c) => n + c.binds, 0);
+
+const unbound = [['no binding', undefined], ['binding.enabled false', { enabled: false }]];
+for (const [label, binding] of unbound) {
+  test(`#53 a named queue with ${label} is not bound on create or re-create`, async () => {
+    const { channel, amqp, fake } = await ready({
+      exchange: { name: 'events' }, queue: { name: 'work' }, binding, prefetch: 1 });
+    await recreateOnce(channel, fake);
+    assert.ok(amqp.length > 1, 'the channel was re-created');
+    assert.strictEqual(allBinds(amqp), 0);
+  });
+}
+
+test('#53 a named queue with binding.enabled is bound once per create', async () => {
+  const { channel, amqp, fake } = await ready({
+    exchange: { name: 'events' }, queue: { name: 'work' }, binding: { enabled: true },
+    prefetch: 1 });
+  assert.strictEqual(allBinds(amqp), 1);
+  await recreateOnce(channel, fake);
+  assert.strictEqual(allBinds(amqp), 2);
+});
+
+test('#53 a dynamic queue is bound once by its consume, once per re-create', async () => {
+  const config = { exchange: { name: 'events' }, binding: { pattern: 'rk' }, prefetch: 1 };
+  const { channel, amqp, fake } = await ready(config);
+  assert.strictEqual(allBinds(amqp), 0, 'no queue yet, nothing to bind');
+  channel.consume();
+  await settle();
+  assert.strictEqual(allBinds(amqp), 1);
+  await recreateOnce(channel, fake);
+  assert.strictEqual(allBinds(amqp), 2);
 });
 
 // ---- #54 x-consumer-timeout for quorum queues only
@@ -242,10 +286,18 @@ async function livePool(t, channelConf, queueNames = []) {
   return { pool, admin, adminCh, exchange, errors, queueNames, connectionName };
 }
 
-const readyChannel = pool => new Promise(resolve => pool.once('ready', resolve));
-const consuming = ch => new Promise(resolve => ch.on('info', i => {
-  if (i?.message?.startsWith?.('consume from queue')) resolve();
-}));
+// resolves with the first matching event; a run that never gets it fails with the event named
+function waitEvent(emitter, event, test = () => true) {
+  let got;
+  const f = arg => { if (got === undefined && test(arg)) got = arg ?? true; };
+  emitter.on(event, f);
+  const found = until(() => got, `'${event}'`, 60).finally(() => emitter.off(event, f));
+  found.catch(() => {});   // the awaiting line reports it; this one is not an unhandled rejection
+  return found;
+}
+const readyChannel = pool => waitEvent(pool, 'ready');
+const recreatedChannel = pool => waitEvent(pool, 'recreated');
+const consuming = ch => waitEvent(ch, 'info', i => i?.message?.startsWith?.('consume from queue'));
 
 test('live: a named queue that does not exist is declared durable, with no consumer timeout',
   { skip: skipLive }, async t => {
@@ -317,13 +369,12 @@ test('live: after a reconnect the dynamic queue is declared again, its old messa
   const { pool, adminCh, exchange, connectionName } = await livePool(t, { prefetch: 1 });
   const ch = await readyChannel(pool);
   const bodies = [];
-  let held;
-  const heldSeen = new Promise(resolve => { held = resolve; });
+  let held = false;
   ch.on('message', m => {
     const body = m.content.toString();
     bodies.push(body);
     // held-1 is never acked: in flight when the connection goes
-    if (body === 'held-1' && !m.fields.redelivered) held();
+    if (body === 'held-1' && !m.fields.redelivered) held = true;
     else ch.ack(m);
   });
   const done = consuming(ch);
@@ -333,8 +384,8 @@ test('live: after a reconnect the dynamic queue is declared again, its old messa
   t.after(() => mgmt('DELETE', queuePath(name)));
   adminCh.publish(exchange, '', Buffer.from('held-1'));
   adminCh.publish(exchange, '', Buffer.from('held-2'));    // waits behind held-1 (prefetch 1)
-  await heldSeen;
-  const recreated = new Promise(resolve => pool.once('recreated', resolve));
+  await until(() => held, 'held-1 delivered', 60);
+  const recreated = recreatedChannel(pool);
   await closeConnection(await connectionNamed(connectionName));
   await recreated;
   // the queue is back under the same name, exclusive again; a message published now arrives
@@ -397,7 +448,7 @@ test('live: a transient named queue is not redeclared; one the pool re-creates c
   assert.deepStrictEqual(errors, []);
   assert.strictEqual((await queueInfo(name)).durable, false);
   await adminCh.deleteQueue(name);
-  const recreated = new Promise(resolve => pool.once('recreated', resolve));
+  const recreated = recreatedChannel(pool);
   await closeConnection(await connectionNamed(connectionName));
   await recreated;
   const back = await until(async () => {
