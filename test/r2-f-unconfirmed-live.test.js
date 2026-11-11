@@ -137,3 +137,13 @@ test('live: a publish the broker refuses with a channel error comes back with it
       ['refused', 'closed', 404]);
     await drain(`${name}.q`);
   });
+
+test('live: waitConfirmed() resolves [] once the broker has confirmed every message',
+  { skip: !URL_ && 'FAMQP_TEST_URL not set', timeout: 60000 }, async t => {
+    const { name, channel } = await liveChannel(t, 'wait');
+    for (let i = 0; i < BEFORE * BATCH; i++) channel.publish({ i }, 'k', { messageId: `w.${i}` });
+    const left = await channel.waitConfirmed(30000);
+    const queued = await drain(`${name}.q`);
+    assert.deepStrictEqual({ left: left.length, queued: queued.length },
+      { left: 0, queued: BEFORE * BATCH });
+  });

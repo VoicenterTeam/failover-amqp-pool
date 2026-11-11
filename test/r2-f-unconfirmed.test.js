@@ -279,3 +279,85 @@ test('a hand-back emits one info with its count, reason, cause and channelId', a
     [{ message: 'unconfirmed messages handed back', count: 2, reason: 'closed', cause: null,
       channelId: channel._id }]);
 });
+
+// ---- waitConfirmed(ms): what stop() waits on. It resolves with the messages still unconfirmed
+// when every held message is confirmed or ms has passed; those leftovers are released.
+
+test('waitConfirmed() with nothing held resolves [] at once', async () => {
+  const { channel } = await ready();
+  assert.deepStrictEqual(await channel.waitConfirmed(50), []);
+});
+
+test('waitConfirmed() resolves [] once every held message is confirmed', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { channel, fake } = await ready();
+  channel.publish({ n: 1 });
+  channel.sendToQueue('target', { n: 2 });
+  const waited = channel.waitConfirmed(1000);
+  fake().confirms[0](null);
+  fake().confirms[1](null);
+  assert.deepStrictEqual(await waited, []);
+});
+
+test('waitConfirmed() after ms resolves the unconfirmed ones, reason timeout', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { channel, fake } = await ready();
+  for (const n of [1, 2]) channel.publish({ n }, 'rk', { messageId: `m-${n}` });
+  const waited = channel.waitConfirmed(1000);
+  fake().confirms[0](null);
+  t.mock.timers.tick(1000);
+  assert.deepStrictEqual((await waited).map(e => [e.props.messageId, e.reason, e.cause]),
+    [['m-2', 'timeout', null]]);
+});
+
+test('waitConfirmed() leftovers are released: a later close or confirm hands nothing back',
+  async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const { channel, handed, fake } = await ready();
+    channel.publish({ n: 1 });
+    channel.publish({ n: 2 });
+    const waited = channel.waitConfirmed(10);
+    t.mock.timers.tick(10);
+    await waited;
+    fake().confirms[0](nacked());
+    fake().close();
+    await tick();
+    assert.deepStrictEqual(handed, []);
+  });
+
+test('waitConfirmed() with no argument waits 5000 ms', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { channel } = await ready();
+  channel.publish({ n: 1 });
+  let left = null;
+  channel.waitConfirmed().then(l => { left = l; });
+  t.mock.timers.tick(4999);
+  await tick();
+  assert.strictEqual(left, null);
+  t.mock.timers.tick(1);
+  await tick();
+  assert.strictEqual(left.length, 1);
+});
+
+test('waitConfirmed() during a broker close: the close hands them back, the wait gets []',
+  async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const { channel, handed, fake } = await ready();
+    channel.publish({ n: 1 });
+    const waited = channel.waitConfirmed(1000);
+    fake().close();
+    assert.deepStrictEqual(await waited, []);
+    await tick();
+    assert.strictEqual(handed.flat().length, 1);
+  });
+
+test('waitConfirmed() refuses an ms that is not a whole number from 0 to 2147483647',
+  async () => {
+    const { channel } = await ready();
+    const rows = { negative: -1, nan: NaN, infinite: Infinity, fraction: 1.5, string: '5',
+      tooBig: 2 ** 31, nul: null };
+    for (const [row, ms] of Object.entries(rows)) {
+      assert.throws(() => channel.waitConfirmed(ms),
+        { name: 'TypeError', message: /^waitConfirmed: ms must be/ }, row);
+    }
+  });

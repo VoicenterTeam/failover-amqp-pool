@@ -14,6 +14,9 @@ const DYNAMIC_QUEUE_EXPIRES = 1800000;
 // the consumer timeout a quorum queue is declared with, ms
 const QUORUM_CONSUMER_TIMEOUT = 7200000;
 
+// the longest wait setTimeout takes, ms; a longer one would fire at once
+const MAX_WAIT = 2147483647;
+
 class Channel extends EventEmitter {
   #isAlive= false;
   #isConnecting = false;
@@ -30,6 +33,8 @@ class Channel extends EventEmitter {
   #unconfirmed = new WeakMap();
   // amqplib channels this Channel closed itself: their unconfirmed messages are not handed back
   #closedByChannel = new WeakSet();
+  #held = new Set();          // the pending Sets of amqplib channels not yet closed
+  #confirmWaiters = new Set();   // waitConfirmed() calls, each settled once nothing is held
   constructor(connection, channelConfig) {
     super();
     this.hash = hash(channelConfig)
@@ -338,6 +343,7 @@ class Channel extends EventEmitter {
   #trackConfirms(amqpChannel){
     const pending = new Set();
     this.#unconfirmed.set(amqpChannel, pending);
+    this.#held.add(pending);
     // amqplib emits a channel's own error (404, 406, ...) just before its 'close'; a connection
     // that closes closes its channels with none
     let failure = null;
@@ -345,6 +351,8 @@ class Channel extends EventEmitter {
     amqpChannel.prependListener('close', () => {
       const entries = [...pending];
       pending.clear();
+      this.#held.delete(pending);
+      this.#settleWaiters();
       // a close this Channel asked for: the broker has every message published before it, and
       // amqplib drops the acks that arrive while its channel is closing
       if (this.#closedByChannel.has(amqpChannel)) return;
@@ -356,8 +364,9 @@ class Channel extends EventEmitter {
   // back. Neither does anything once the message has left the set.
   #confirmed(pending, entry){
     return (err) => {
-      if (!pending.delete(entry) || !err) return;
-      this.#handBack([entry], 'nack');
+      if (!pending.delete(entry)) return;
+      this.#settleWaiters();
+      if (err) this.#handBack([entry], 'nack');
     };
   }
   // Sends the message to amqplib with its confirm callback; tracked only once amqplib took it
@@ -366,6 +375,41 @@ class Channel extends EventEmitter {
     const result = send(pending ? this.#confirmed(pending, entry) : undefined);
     pending?.add(entry);
     return result;
+  }
+  #heldCount(){
+    let count = 0;
+    for (const pending of this.#held) count += pending.size;
+    return count;
+  }
+  #settleWaiters(){
+    if (this.#confirmWaiters.size === 0 || this.#heldCount() > 0) return;
+    for (const settle of [...this.#confirmWaiters]) settle();
+  }
+  // Resolves, never rejects, with the messages still unconfirmed once nothing is held (then [])
+  // or ms has passed, each with reason 'timeout'. Those leftovers are released: no later
+  // confirm or close hands them back, so the caller owns them.
+  waitConfirmed(ms = 5000){
+    if (!Number.isInteger(ms) || ms < 0 || ms > MAX_WAIT) {
+      const got = typeof ms === 'number' ? ms : typeof ms;
+      throw new TypeError(`waitConfirmed: ms must be a whole number from 0 to ${MAX_WAIT}, ` +
+        `got ${got}`);
+    }
+    if (this.#heldCount() === 0) return Promise.resolve([]);
+    return new Promise((resolve) => {
+      const settle = () => {
+        clearTimeout(timer);
+        this.#confirmWaiters.delete(settle);
+        const left = [];
+        for (const pending of this.#held) {
+          left.push(...pending);
+          pending.clear();
+        }
+        resolve(left.map(entry => ({ ...entry, reason: 'timeout', cause: null })));
+        this.#settleWaiters();
+      };
+      const timer = setTimeout(settle, ms);
+      this.#confirmWaiters.add(settle);
+    });
   }
   // On the next tick: a listener runs after amqplib and this Channel have handled the close or
   // the confirm, and its throw cannot cut that handling short. The info says it happened even
