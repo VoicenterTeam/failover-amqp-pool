@@ -43,3 +43,21 @@ test('a listener told of a tick\'s drop sees the cache without the dropped entry
   tick();
   assert.deepStrictEqual(seen, [0]);
 });
+
+test('a pass walks only what was cached when it began: a listener chain waits a tick', t => {
+  const A = stub('A');
+  const { pool, cached, tick } = rig(t, [A]);
+  const publish = A.publish;
+  A.publish = msg => { publish(msg); pool.emit('info', 'published'); };
+  const laterA = () => { let calls = 0; return () => (calls++ === 0 ? null : [A]); };
+  let made = 0;
+  pool.on('info', info => {
+    if (info === 'published' && made < 50) pool.publish({ n: ++made }, laterA());
+  });
+  pool.publish({ n: 0 }, laterA());
+  tick();
+  const first = { took: [...A.got], cache: cached() };
+  tick();
+  assert.deepStrictEqual({ first, took: A.got },
+    { first: { took: [0], cache: [1] }, took: [0, 1] });
+});
