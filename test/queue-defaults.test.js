@@ -5,6 +5,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const os = require('node:os');
+const { EventEmitter } = require('node:events');
 const Channel = require('../Channel');
 const { FakeAmqpChannel } = require('./helpers/fakes');
 const { MGMT, mgmt, until, queuePath, queueInfo, connectionNamed, closeConnection } =
@@ -281,7 +282,9 @@ async function livePool(t, channelConf, queueNames = []) {
       ...channelConf },
   }]);
   const errors = [];
-  pool.on('error', e => errors.push(e));
+  const events = [];   // the pool's 'error' and 'info' events in order, for a row that gives up
+  pool.on('error', e => { errors.push(e); events.push(['error', e]); });
+  pool.on('info', i => events.push(['info', i]));
   t.after(async () => {
     const stopped = pool.stop();
     pool.on('error', () => {});
@@ -291,21 +294,46 @@ async function livePool(t, channelConf, queueNames = []) {
     await admin.close().catch(() => {});
   });
   const connectionName = `${connection_name}_${os.hostname}`;
-  return { pool, admin, adminCh, exchange, errors, queueNames, connectionName };
+  return { pool, admin, adminCh, exchange, errors, events, queueNames, connectionName };
 }
 
 // resolves with the first matching event; a run that never gets it fails with the event named
-function waitEvent(emitter, event, test = () => true) {
+function waitEvent(emitter, event, test = () => true, polls = 90) {
   let got;
   const f = arg => { if (got === undefined && test(arg)) got = arg ?? true; };
   emitter.on(event, f);
-  const found = until(() => got, `'${event}'`, 90).finally(() => emitter.off(event, f));
+  const found = until(() => got, `'${event}'`, polls).finally(() => emitter.off(event, f));
   found.catch(() => {});   // the awaiting line reports it; this one is not an unhandled rejection
   return found;
 }
 const readyChannel = pool => waitEvent(pool, 'ready');
 const recreatedChannel = pool => waitEvent(pool, 'recreated');
 const consuming = ch => waitEvent(ch, 'info', i => i?.message?.startsWith?.('consume from queue'));
+
+// #78: 'ready' within `polls` polls of 100 ms. Giving up, the error carries the pool's 'error'
+// and 'info' events in its `events` field, and its message names them for the run's log.
+async function readyOrEvents(pool, events, polls) {
+  try {
+    return await waitEvent(pool, 'ready', undefined, polls);
+  } catch (e) {
+    e.events = events.slice();
+    const seen = events.map(([name, arg]) => `${name} ${arg?.message ?? arg}`);
+    e.message += `; the pool's events: ${seen.join(' | ') || 'none'}`;
+    throw e;
+  }
+}
+
+test('#78 a wait for ready that gives up carries the pool events it saw', async () => {
+  const events = [['info', { message: 'Connection created' }], ['error', new Error('boom')]];
+  const gaveUp = await readyOrEvents(new EventEmitter(), events, 1).catch(e => e);
+  assert.deepStrictEqual(gaveUp.events, events);
+});
+
+// The quorum row's window (#78). Declare-to-ready measured on 3.13.7 and 4.3.7, n=20 alone and
+// n=30 beside a full suite run each: p99 146 / 133 ms alone, 171 / 242 ms under the suite. The
+// one recorded timeout waited over 9 s, 37 times that p99, so the window is the worst p99 times
+// a margin of 50: 12.1 s, 121 polls of 100 ms. A give-up names the pool's events (above).
+const QUORUM_READY_POLLS = 121;
 
 test('live: a named queue that does not exist is declared durable, with no consumer timeout',
   { skip: skipLive }, async t => {
@@ -335,12 +363,12 @@ test('live: a dynamic queue that does not exist is declared exclusive, transient
 });
 
 test('live: a quorum queue that does not exist is declared durable, x-consumer-timeout 7200000',
-  { skip: skipLive }, async t => {
+  { skip: skipLive, timeout: QUORUM_READY_POLLS * 100 + 10000 }, async t => {
   const name = unique('quorum');
-  const { pool } = await livePool(t,
+  const { pool, events } = await livePool(t,
     { prefetch: 5, queue: { name, options: { arguments: { 'x-queue-type': 'quorum' } } } },
     [name]);
-  await readyChannel(pool);
+  await readyOrEvents(pool, events, QUORUM_READY_POLLS);
   const info = await queueInfo(name);
   assert.strictEqual(info.type, 'quorum');
   assert.strictEqual(info.durable, true);
