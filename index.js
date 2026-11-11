@@ -104,9 +104,10 @@ class AMQPPool extends EventEmitter {
   #wired = new WeakMap();
   #stopped = false;
 
-  // A stopped pool is final: it opens, creates and sends nothing
+  // A stopped pool is final: it opens, creates and sends nothing. The code lets a caller match
+  // the error without its text.
   #assertRunning() {
-    if (this.#stopped) throw new Error('Pool is stopped');
+    if (this.#stopped) throw Object.assign(new Error('Pool is stopped'), { code: 'POOL_STOPPED' });
   }
 
   // Re-emits each of an emitter's events on the pool, until the pool is stopped
