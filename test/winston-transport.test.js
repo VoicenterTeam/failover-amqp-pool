@@ -11,7 +11,9 @@ const pool = [{ connection: { host: '127.0.0.1', port: 5672 }, channel: {} }];
 function rig(t) {
   offline(t);
   const transport = new WinstonAMQPPoolTransport({ pool, topic: 'logs' });
-  t.after(() => transport.client.stop());
+  // the real stop(), taken before any test mocks it, so the pool's timer always ends
+  const stop = transport.client.stop.bind(transport.client);
+  t.after(() => stop());
   const heard = { warning: [], warn: [] };
   const onWarning = w => heard.warning.push(w);
   process.on('warning', onWarning);
@@ -88,9 +90,7 @@ test('close() swallows a rejected stop()', async t => {
   const onRejection = e => rejected.push(e);
   process.on('unhandledRejection', onRejection);
   t.after(() => process.off('unhandledRejection', onRejection));
-  // once only, so the after hook's stop() is the real one and the pool's timer ends
-  t.mock.method(transport.client, 'stop', () => Promise.reject(new Error('teardown')),
-    { times: 1 });
+  t.mock.method(transport.client, 'stop', () => Promise.reject(new Error('teardown')));
   transport.close();
   await new Promise(setImmediate);
   assert.deepStrictEqual(rejected, []);
