@@ -181,7 +181,7 @@ test('sendToQueue: a nack hands back the queue, message and options, reason nack
   fake().confirms[0](nacked());
   await tick();
   assert.deepStrictEqual(handed, [[{ method: 'sendToQueue', queue: 'target', msg: '{"n":1}',
-    props: { messageId: 's-1' }, reason: 'nack', cause: null }]]);
+    props: { messageId: 's-1' }, attempts: 0, reason: 'nack', cause: null }]]);
 });
 
 test('sendToQueue: a close hands back a pending message, reason closed', async () => {
@@ -190,7 +190,7 @@ test('sendToQueue: a close hands back a pending message, reason closed', async (
   fake().close();
   await tick();
   assert.deepStrictEqual(handed, [[{ method: 'sendToQueue', queue: 'target', msg: '{"n":1}',
-    props: undefined, reason: 'closed', cause: null }]]);
+    props: undefined, attempts: 0, reason: 'closed', cause: null }]]);
 });
 
 test('on a close, \'unconfirmed\' fires after the channel has marked itself down', async () => {
@@ -400,3 +400,79 @@ test('a create that fails with its channel open: the close it makes hands nothin
     channel.close();
     assert.deepStrictEqual([fake().published.length, handed], [1, []]);
   });
+
+// ---- resend(entry): the pool's way to send a handed-back entry again, counting the attempt
+
+test('a first send is handed back with attempts 0', async () => {
+  const { channel, handed, fake } = await ready();
+  channel.publish({ n: 1 });
+  fake().close();
+  await tick();
+  assert.deepStrictEqual(handed.flat().map(e => e.attempts), [0]);
+});
+
+test('resend() of a publish entry sends the same message; its hand-back has attempts 1',
+  async () => {
+    const { channel, handed, fake } = await ready();
+    channel.publish({ n: 1 }, 'rk', { messageId: 'm-1' });
+    fake().confirms[0](nacked());
+    await tick();
+    channel.resend(handed[0][0]);
+    fake().confirms[1](nacked());
+    await tick();
+    const [first, again] = fake().published;
+    assert.deepStrictEqual([again.content, again.routingKey, again.options.messageId],
+      [first.content, 'rk', 'm-1']);
+    assert.deepStrictEqual(handed.flat().map(e => e.attempts), [0, 1]);
+  });
+
+test('resend() of a sendToQueue entry sends to the same queue with its options', async () => {
+  const { channel, handed, fake } = await ready();
+  channel.sendToQueue('target', { n: 1 }, { messageId: 's-1' });
+  fake().confirms[0](nacked());
+  await tick();
+  channel.resend(handed[0][0]);
+  fake().close();
+  await tick();
+  assert.deepStrictEqual(fake().sent.map(s => [s.queue, s.content.toString(), s.rest[0]]),
+    [['target', '{"n":1}', { messageId: 's-1' }], ['target', '{"n":1}', { messageId: 's-1' }]]);
+  assert.deepStrictEqual(handed.flat().map(e => e.attempts), [0, 1]);
+});
+
+test('resend() counts on: a third hand-back has attempts 2', async () => {
+  const { channel, handed, fake } = await ready();
+  channel.publish({ n: 1 });
+  for (let i = 0; i < 3; i++) {
+    if (i > 0) channel.resend(handed[i - 1][0]);
+    fake().confirms[i](nacked());
+    await tick();
+  }
+  assert.deepStrictEqual(handed.flat().map(e => e.attempts), [0, 1, 2]);
+});
+
+test('resend() on a dead channel throws as publish() does, and counts nothing', async () => {
+  const { channel, connection, handed, fake } = await ready();
+  channel.publish({ n: 1 });
+  fake().confirms[0](nacked());
+  await tick();
+  fake().emit('close');
+  connection.alive = false;
+  assert.throws(() => channel.resend(handed[0][0]), { message: 'Channel is dead!' });
+  connection.alive = true;
+  void channel.alive;
+  await tick();
+  channel.publish({ n: 2 });
+  fake().close();
+  await tick();
+  assert.deepStrictEqual(handed.flat().map(e => e.attempts), [0, 0]);
+});
+
+test('resend() refuses what is not a handed-back entry, naming entry', async () => {
+  const { channel } = await ready();
+  const rows = { none: undefined, nul: null, string: 'x', noMethod: { msg: 'x' },
+    otherMethod: { method: 'get', msg: 'x' } };
+  for (const [row, entry] of Object.entries(rows)) {
+    assert.throws(() => channel.resend(entry),
+      { name: 'TypeError', message: /^resend: entry must be/ }, row);
+  }
+});

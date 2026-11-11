@@ -52,6 +52,7 @@ class Channel extends EventEmitter {
   #closedByChannel = new WeakSet();
   #held = new Set();          // the pending Sets of amqplib channels not yet closed
   #confirmWaiters = new Set();   // waitConfirmed() calls, each settled once nothing is held
+  #attempts = 0;   // the re-send count resend() gives the send in progress
   constructor(connection, channelConfig) {
     super();
     this.hash = hash(channelConfig)
@@ -397,6 +398,23 @@ class Channel extends EventEmitter {
     pending?.add(entry);
     return result;
   }
+  // Sends a handed-back entry again, as publish() or sendToQueue() sent it the first time, and
+  // throws as they do. Its next hand-back carries attempts + 1, so the pool can cap re-publishes
+  // per message.
+  resend(entry){
+    const method = entry?.method;
+    if (method !== 'publish' && method !== 'sendToQueue') {
+      throw new TypeError("resend: entry must be an 'unconfirmed' entry, with method 'publish' " +
+        "or 'sendToQueue'");
+    }
+    this.#attempts = (Number.isInteger(entry.attempts) ? entry.attempts : 0) + 1;
+    try {
+      if (method === 'publish') return this.publish(entry.msg, entry.topic, entry.props);
+      return this.sendToQueue(entry.queue, entry.msg, entry.props);
+    } finally {
+      this.#attempts = 0;
+    }
+  }
   // Runs what follows a send. A listener's throw is reported as 'error', or with no 'error'
   // listener (or one that throws too) as a process warning; it never reaches the caller, who
   // would take the written message for a failed one and send it again.
@@ -510,7 +528,9 @@ class Channel extends EventEmitter {
         let message = Buffer.from(msg);
         const exchange = options.exchange || this.exchange.name;
         const named = this.#exchangeName(options);
-        const entry = { method: 'publish', msg, topic, props: { ...options } };
+        const entry = {
+          method: 'publish', msg, topic, props: { ...options }, attempts: this.#attempts
+        };
         try {
           this.#sendTracked(entry, confirmed =>
             publishing(this.connection.url, named, options, withContext =>
@@ -682,7 +702,9 @@ class Channel extends EventEmitter {
       Object.assign(msg, this.msg);
       msg = JSON.stringify(msg)
     }
-    const entry = { method: 'sendToQueue', queue, msg, props: options && { ...options } };
+    const entry = {
+      method: 'sendToQueue', queue, msg, props: options && { ...options }, attempts: this.#attempts
+    };
     const content = Buffer.from(msg)
     // the default exchange has no name; telemetry names it amq.default
     try {
