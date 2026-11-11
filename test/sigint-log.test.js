@@ -7,7 +7,7 @@ const { spawn } = require('node:child_process');
 const path = require('node:path');
 const { leftovers } = require('./helpers/leak-guard');
 const { mgmt, queuePath, queueInfo } = require('./helpers/mgmt');
-const { own } = require('./helpers/own');
+const { own, acquireOwned } = require('./helpers/own');
 
 const ROOT = path.resolve(__dirname, '..');
 const CHILD = `
@@ -352,8 +352,8 @@ test('SIGINT closes the live pool connection on the broker',
       });
       user = `sigintlog-${process.pid}`;
       pass = 'sigintlog-pass';
-      assert.ok((await api('PUT', `users/${user}`, { password: pass, tags: '' })).ok);
-      await own(t, () => api('DELETE', `users/${user}`));
+      const put = () => api('PUT', `users/${user}`, { password: pass, tags: '' });
+      assert.ok((await acquireOwned(t, put, () => api('DELETE', `users/${user}`))).ok);
       const all = { configure: '.*', write: '.*', read: '.*' };
       assert.ok((await api('PUT', `permissions/%2F/${user}`, all)).ok);
       connections = async () => {

@@ -5,7 +5,7 @@ const assert = require('node:assert');
 const amqplib = require('amqplib');
 const AMQPPool = require('..');
 const { leftovers } = require('./helpers/leak-guard');
-const { own } = require('./helpers/own');
+const { own, acquireOwned } = require('./helpers/own');
 
 const URL_ = process.env.FAMQP_TEST_URL;
 const skip = URL_ ? false : 'FAMQP_TEST_URL not set';
@@ -27,8 +27,9 @@ async function setup(t) {
   const admin = await amqplib.connect(URL_);
   await own(t, () => admin.close().catch(() => {}));
   const adminCh = await admin.createChannel();
-  await adminCh.assertQueue(queue, { durable: true, autoDelete: false, arguments: { 'x-expires': 600000 } });
-  await own(t, () => adminCh.deleteQueue(queue).catch(() => {}));
+  const declare = () => adminCh.assertQueue(queue,
+    { durable: true, autoDelete: false, arguments: { 'x-expires': 600000 } });
+  await acquireOwned(t, declare, () => adminCh.deleteQueue(queue).catch(() => {}));
   const pool = new AMQPPool([{
     connection: { host: u.hostname, port: Number(u.port), username: decodeURIComponent(u.username), password: decodeURIComponent(u.password), ssl: false, reconnectInterval: 50 },
     channel: { prefetch: 20, queue: { name: queue } }
@@ -159,17 +160,19 @@ async function poolFor(t, channel) {
 
 test('issue #5: a create that fails on a locked queue stays dead and retries until the queue is free', { skip }, async t => {
   const queue = `famqp-locked-${process.pid}-${Date.now()}`;
-  const admin = await amqplib.connect(URL_);
-  await own(t, () => admin.close().catch(() => {}));
-  const adminCh = await admin.createChannel();
-  await adminCh.assertQueue(queue, { exclusive: true });   // 405 RESOURCE_LOCKED for any other connection
   // The pool's retry declares this name after the admin deleted it, and its autoDelete never
   // fires without a consumer. This release deletes the queue on its own connection, so it runs
-  // even when the test fails midway. Owned before the pool, it runs after the pool has stopped.
+  // even when the test fails midway. Owned first, it runs last: after the pool has stopped and
+  // the admin, which holds the queue exclusive until then, has closed.
   await own(t, async () => {
     const c = await amqplib.connect(URL_);
     try { await (await c.createChannel()).deleteQueue(queue); } finally { await c.close().catch(() => {}); }
   });
+  const admin = await amqplib.connect(URL_);
+  await own(t, () => admin.close().catch(() => {}));
+  const adminCh = await admin.createChannel();
+  // 405 RESOURCE_LOCKED for any other connection
+  await adminCh.assertQueue(queue, { exclusive: true });
   const { pool, errors } = await poolFor(t, { prefetch: 1,
     queue: { name: queue, options: { autoDelete: true, arguments: { 'x-expires': 600000 } } } });
   let ready = 0;
@@ -289,10 +292,12 @@ async function mgmt(method, path, body) {
 }
 
 // a pool for one user that records every event; returns the recorded events and helpers.
-// The user's DELETE hook registers as soon as the user exists, before a step that can throw.
+// The user's DELETE is owned before its PUT, so a PUT that fails after the broker made the user
+// still leaves none.
 async function credentialPool(t, username, password, vhost = '/') {
-  await mgmt('PUT', `users/${encodeURIComponent(username)}`, { password, tags: '' });
-  await own(t, () => mgmt('DELETE', `users/${encodeURIComponent(username)}`));
+  const user = `users/${encodeURIComponent(username)}`;
+  const put = () => mgmt('PUT', user, { password, tags: '' });
+  await acquireOwned(t, put, () => mgmt('DELETE', user));
   const grant = `permissions/${encodeURIComponent(vhost)}/${encodeURIComponent(username)}`;
   await mgmt('PUT', grant, { configure: '.*', write: '.*', read: '.*' });
   const u = new URL(URL_);
@@ -367,8 +372,8 @@ test('issue #9: vhosts with URL syntax characters, and the default vhost, connec
     await t.test(JSON.stringify(vhost), async t2 => {
       const name = vhost.slice(1);
       if (name) {
-        await mgmt('PUT', `vhosts/${encodeURIComponent(name)}`, {});
-        await own(t2, () => mgmt('DELETE', `vhosts/${encodeURIComponent(name)}`));
+        const path = `vhosts/${encodeURIComponent(name)}`;
+        await acquireOwned(t2, () => mgmt('PUT', path, {}), () => mgmt('DELETE', path));
         await mgmt('PUT', `permissions/${encodeURIComponent(name)}/${encodeURIComponent(user)}`, { configure: '.*', write: '.*', read: '.*' });
       }
       const pool = new AMQPPool([{
@@ -453,8 +458,10 @@ test('#65 the leak guard reports a queue this run left, and not after it is dele
     await own(t, () => admin.close().catch(() => {}));
     const ch = await admin.createChannel();
     // durable: RabbitMQ 4 refuses a transient queue that is not exclusive
-    await ch.assertQueue(queue, { durable: true, arguments: { 'x-expires': 600000 } });
-    await own(t, () => mgmt('DELETE', `queues/%2F/${encodeURIComponent(queue)}`));
+    const declare = () => ch.assertQueue(queue,
+      { durable: true, arguments: { 'x-expires': 600000 } });
+    const drop = () => mgmt('DELETE', `queues/%2F/${encodeURIComponent(queue)}`);
+    await acquireOwned(t, declare, drop);
     assert.deepStrictEqual(await runLeftovers(), [`queues:${queue}`]);
     await ch.deleteQueue(queue);
     assert.deepStrictEqual(await runLeftovers(), []);

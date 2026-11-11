@@ -367,9 +367,11 @@ test('live: a dynamic queue that does not exist is declared exclusive, transient
   const ch = await readyChannel(pool);
   const done = consuming(ch);
   ch.consume();
+  // the dynamic queue's DELETE, registered before the wait: a row that gives up there still
+  // removes it, and the #65 guard does not see <id>:<hostname> names
+  t.after(() => ch.queue?.name && mgmt('DELETE', queuePath(ch.queue.name)));
   await done;
   const info = await queueInfo(ch.queue.name);
-  t.after(() => mgmt('DELETE', queuePath(ch.queue.name)));
   assert.strictEqual(info.durable, false);
   assert.strictEqual(info.exclusive, true);
   assert.strictEqual(info.arguments['x-expires'], 1800000);
@@ -399,8 +401,8 @@ test('live: a dynamic quorum queue is declared from nothing, durable, and consum
   ch.on('message', m => { bodies.push(m.content.toString()); ch.ack(m); });
   const done = orEvents(waitEvent(ch, 'info', isConsume, QUORUM_READY_POLLS), events);
   ch.consume();
+  t.after(() => ch.queue?.name && mgmt('DELETE', queuePath(ch.queue.name)));   // as above
   await done;
-  t.after(() => mgmt('DELETE', queuePath(ch.queue.name)));
   for (let i = 0; i < 40 && !bodies.includes('hello'); i++) {
     adminCh.publish(exchange, '', Buffer.from('hello'));
     await new Promise(r => setTimeout(r, 100));
@@ -423,8 +425,8 @@ test('live: a dynamic stream with expires and messageTtl none is declared durabl
   const ch = await readyChannel(pool);
   const done = consuming(ch);
   ch.consume();
+  t.after(() => ch.queue?.name && mgmt('DELETE', queuePath(ch.queue.name)));   // as above
   await done;
-  t.after(() => mgmt('DELETE', queuePath(ch.queue.name)));
   const info = await queueInfo(ch.queue.name);
   assert.strictEqual(info.type, 'stream');
   assert.strictEqual(info.durable, true);
@@ -449,9 +451,9 @@ test('live: after a reconnect the dynamic queue is declared again, its old messa
   });
   const done = consuming(ch);
   ch.consume();
+  t.after(() => ch.queue?.name && mgmt('DELETE', queuePath(ch.queue.name)));   // as above
   await done;
   const name = ch.queue.name;
-  t.after(() => mgmt('DELETE', queuePath(name)));
   adminCh.publish(exchange, '', Buffer.from('held-1'));
   adminCh.publish(exchange, '', Buffer.from('held-2'));    // waits behind held-1 (prefetch 1)
   await until(() => held, 'held-1 delivered', 90);
@@ -480,9 +482,9 @@ test('live: a channel re-create on the same connection finds its exclusive queue
   ch.on('message', m => { bodies.push(m.content.toString()); ch.ack(m); });
   const done = consuming(ch);
   ch.consume();
+  t.after(() => ch.queue?.name && mgmt('DELETE', queuePath(ch.queue.name)));   // as above
   await done;
   const name = ch.queue.name;
-  t.after(() => mgmt('DELETE', queuePath(name)));
   let again = false;
   pool.once('recreated', () => { again = true; });
   // a 404 closes the channel; reading alive re-creates it
