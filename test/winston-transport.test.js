@@ -49,10 +49,14 @@ test('the warn-once flag is per transport: two stopped transports warn once each
   const a = rig(t);
   const b = new WinstonAMQPPoolTransport({ pool });
   t.after(() => b.client.stop());
+  const bWarn = [];
+  b.on('warn', e => bWarn.push(e));
   await Promise.all([a.transport.client.stop(), b.client.stop()]);
   await logLines(a.transport, 2);
   await logLines(b, 2);
   assert.strictEqual(a.heard.warning.length, 2);
+  assert.strictEqual(a.heard.warn.length, 1);
+  assert.strictEqual(bWarn.length, 1);
 });
 
 test('the error is matched by its code, not its text', async t => {
