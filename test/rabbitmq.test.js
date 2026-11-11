@@ -8,6 +8,7 @@ const { leftovers } = require('./helpers/leak-guard');
 
 const URL_ = process.env.FAMQP_TEST_URL;
 const skip = URL_ ? false : 'FAMQP_TEST_URL not set';
+const STARTED = Date.now();   // names this run declares carry -<pid>-<ms>, ms from here on
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
 async function until(cond, ms = 5000) {
@@ -429,8 +430,25 @@ test('issue #31: stop() after a broker-side close resolves, rejects nothing, con
   });
 
 // issue #49: nothing this process declared may outlive the file. Only with the management API.
+const runLeftovers = () =>
+  leftovers(path => mgmt('GET', path), { pid: process.pid, since: STARTED });
+
+// #65: the guard sees a queue this run leaves on the live broker, and stops seeing it once gone
+test('#65 the leak guard reports a queue this run left, and not after it is deleted',
+  { skip: skipMgmt }, async t => {
+    const queue = `famqp-i65-${process.pid}-${Date.now()}`;
+    const admin = await amqplib.connect(URL_);
+    t.after(() => admin.close().catch(() => {}));
+    const ch = await admin.createChannel();
+    // durable: RabbitMQ 4 refuses a transient queue that is not exclusive
+    await ch.assertQueue(queue, { durable: true, arguments: { 'x-expires': 600000 } });
+    t.after(() => mgmt('DELETE', `queues/%2F/${encodeURIComponent(queue)}`));
+    assert.deepStrictEqual(await runLeftovers(), [`queues:${queue}`]);
+    await ch.deleteQueue(queue);
+    assert.deepStrictEqual(await runLeftovers(), []);
+  });
+
 after(async () => {
   if (!MGMT || !URL_) return;
-  const left = await leftovers(path => mgmt('GET', path), { pid: process.pid });
-  assert.deepStrictEqual(left, []);
+  assert.deepStrictEqual(await runLeftovers(), []);
 });
