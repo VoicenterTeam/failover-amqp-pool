@@ -533,7 +533,9 @@ On SIGINT the pool stops itself and logs one `'info'` event (`'Pool stopped on S
 Because `stop()` removed the pool's SIGINT listener, an app with no other SIGINT listener ends on
 a second Ctrl-C by Node's default (exit code 130). The app can also exit itself, and a process
 with nothing else holding its event loop ends by itself once the pool has stopped. To exit on
-SIGINT, call `process.exit()` in your own listener or in an `'info'` handler.
+SIGINT, call `process.exit()` in your own listener, or in an `'info'` handler that checks for
+`'Pool stopped on SIGINT'`, since other `'info'` events also arrive. A failure of `stop()` is a
+process warning when no `'error'` listener of yours hears it, and so is a listener that throws.
 
 The pm2 names map as: `rabbit_message_publish_rate` → `messaging.client.sent.messages`,
 `rabbit_message_consume_rate` → `messaging.client.consumed.messages`, `rabbit_message_ack_rate`
