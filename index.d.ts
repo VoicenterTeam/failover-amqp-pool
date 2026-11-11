@@ -18,7 +18,8 @@ declare class AMQPPool extends EventEmitter {
     constructor(amqpConfigArray: Array<AMQPPool.AmqpConfig>);
 
     /**
-     * Retries cached messages, one per tick (default every 2000 ms).
+     * Retries cached messages every msgCacheInterval ms (default 2000): each tick sends, in
+     * publish order, every cached message a live channel takes.
      * @throws {AMQPPool.PoolStoppedError} after stop().
      */
     start(msgCacheInterval?: number): void;

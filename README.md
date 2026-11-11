@@ -413,8 +413,9 @@ A returned channel that is down but not closed keeps the message cached until it
 A message is cached once, however many of the channels a custom filter returns fail, and a
 retry publishes it only on the returned channels that have not taken it yet.
 `start(msgCacheInterval)` retries the cache every `msgCacheInterval` ms (default 2000), oldest
-first, and a tick delivers one cached message. A message that cannot go out yet keeps its
-place, and does not hold back a newer one that a live channel takes. A channel that fails in a
+first, and a tick sends every cached message that a live channel takes, in publish order. A
+message that cannot go out yet keeps its place, and does not hold back a newer one that a live
+channel takes. A channel that fails in a
 tick is not tried again in that tick, so the messages waiting for it keep their order. The tick
 reports only the first failed channel as an `'error'`; a down `Channel` that the tick tries also
 emits its own `'channel is dead!'` error, which the pool forwards. A message that a listener
