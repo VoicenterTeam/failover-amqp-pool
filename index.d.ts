@@ -123,7 +123,10 @@ declare namespace AMQPPool {
          * a classic queue gets no default.
          */
         arguments?: any,
-        /** Queue expiry in ms. 'none' is for dynamic queues only (a named queue is refused). */
+        /**
+         * Queue expiry in ms. 'none' is for dynamic queues only (a named queue is refused).
+         * A stream queue refuses x-expires and the message ttl: set both to 'none'.
+         */
         expires?: number | 'none',
         /** Message ttl in ms (default 3600000), or 'none' for no ttl. */
         messageTtl?: number | 'none',

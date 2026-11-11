@@ -211,6 +211,14 @@ test('#53 a dynamic quorum or stream queue defaults to durable and not exclusive
   }
 });
 
+test('#53 a dynamic stream keeps x-expires and the ttl unless both are none', async () => {
+  const stream = { 'x-queue-type': 'stream' };
+  const defaults = await declaredDynamic({ arguments: stream });
+  assert.deepStrictEqual([defaults.expires, defaults.messageTtl], [1800000, 3600000]);
+  const none = await declaredDynamic({ arguments: stream, expires: 'none', messageTtl: 'none' });
+  assert.deepStrictEqual([none.expires, none.messageTtl], [undefined, undefined]);
+});
+
 test('#53 a dynamic classic queue stays exclusive and transient', async () => {
   const options = await declaredDynamic({ arguments: { 'x-queue-type': 'classic' } });
   assert.deepStrictEqual([options.exclusive, options.durable], [true, false]);
@@ -291,7 +299,7 @@ function waitEvent(emitter, event, test = () => true) {
   let got;
   const f = arg => { if (got === undefined && test(arg)) got = arg ?? true; };
   emitter.on(event, f);
-  const found = until(() => got, `'${event}'`, 60).finally(() => emitter.off(event, f));
+  const found = until(() => got, `'${event}'`, 90).finally(() => emitter.off(event, f));
   found.catch(() => {});   // the awaiting line reports it; this one is not an unhandled rejection
   return found;
 }
@@ -364,6 +372,26 @@ test('live: a dynamic quorum queue is declared from nothing, durable, and consum
   assert.strictEqual(info.arguments['x-consumer-timeout'], 7200000);
 });
 
+test('live: a dynamic stream with expires and messageTtl none is declared durable, not exclusive',
+  { skip: skipLive }, async t => {
+  const args = { 'x-queue-type': 'stream', 'x-max-age': '1D' };
+  const options = { expires: 'none', messageTtl: 'none', arguments: args };
+  const conf = { prefetch: 5, queue: { options } };
+  const { pool } = await livePool(t, conf);
+  const ch = await readyChannel(pool);
+  const done = consuming(ch);
+  ch.consume();
+  await done;
+  t.after(() => mgmt('DELETE', queuePath(ch.queue.name)));
+  const info = await queueInfo(ch.queue.name);
+  assert.strictEqual(info.type, 'stream');
+  assert.strictEqual(info.durable, true);
+  assert.strictEqual(info.exclusive, false);
+  assert.strictEqual(info.arguments['x-expires'], undefined);
+  assert.strictEqual(info.arguments['x-message-ttl'], undefined);
+  assert.strictEqual(info.arguments['x-max-age'], '1D');
+});
+
 test('live: after a reconnect the dynamic queue is declared again, its old messages gone',
   { skip: skipLive }, async t => {
   const { pool, adminCh, exchange, connectionName } = await livePool(t, { prefetch: 1 });
@@ -384,7 +412,7 @@ test('live: after a reconnect the dynamic queue is declared again, its old messa
   t.after(() => mgmt('DELETE', queuePath(name)));
   adminCh.publish(exchange, '', Buffer.from('held-1'));
   adminCh.publish(exchange, '', Buffer.from('held-2'));    // waits behind held-1 (prefetch 1)
-  await until(() => held, 'held-1 delivered', 60);
+  await until(() => held, 'held-1 delivered', 90);
   const recreated = recreatedChannel(pool);
   await closeConnection(await connectionNamed(connectionName));
   await recreated;

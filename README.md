@@ -33,8 +33,8 @@ connection with `541 INTERNAL_ERROR`). Before, every queue defaulted to `durable
 - A named queue is declared `durable: true` unless `queue.options.durable` says otherwise.
 - A dynamic queue (no `queue.name`, the pool names it) is declared `exclusive: true` and
   `durable: false` (`exclusive: false, durable: true` for a quorum or stream queue), with the
-  30 minute `x-expires` kept. `queue.options.durable` and
-  `queue.options.exclusive` are honoured when set, on either kind.
+  30 minute `x-expires` kept. `queue.options.durable` and `queue.options.exclusive` are
+  honoured when set, on either kind. A dynamic stream needs more options, see below.
 - `x-consumer-timeout: 7200000` is a default argument for quorum queues only
   (`arguments['x-queue-type'] === 'quorum'`), added when your `arguments` do not set it. A classic
   queue gets no default argument and your `arguments` go to the broker as given.
@@ -64,9 +64,22 @@ Migrating:
   dynamic queue across connections; on 4.3 it needs `durable: true` as well.
 - **A dynamic quorum or stream queue** cannot be exclusive or transient (the broker refuses it
   with 406), so a dynamic queue whose `arguments` set `x-queue-type` to `'quorum'` or `'stream'`
-  defaults to `exclusive: false, durable: true`, as a named queue does. Like any queue it then
-  stays on the broker across connections until `expires` removes it. An explicit
+  defaults to `exclusive: false, durable: true`, as a named queue does. An explicit
   `queue.options.exclusive` or `durable` still wins.
+  - A dynamic **quorum** queue needs no other option. It keeps the 30 minute `x-expires`, so
+    the broker removes it after 30 minutes without a consumer (`expires: 'none'` keeps it).
+  - A dynamic **stream** needs `messageTtl: 'none', expires: 'none'`. A stream refuses both
+    `x-expires` and `x-message-ttl`, which the pool sends by default, so with the defaults, or
+    with only one of the two set to `'none'`, the broker answers 406 (`invalid arg 'x-expires'`
+    or `invalid arg 'x-message-ttl'`; checked on 3.13 and 4.3). A stream never expires, so it
+    stays on the broker, and on every restart of the app a new dynamic stream is added, until it
+    is deleted. Set its retention yourself in `arguments`, for example `'x-max-age': '1D'` or
+    `'x-max-length-bytes'`, or give it a `queue.name` and keep one stream.
+
+  ```javascript
+  queue: { options: { messageTtl: 'none', expires: 'none',
+                      arguments: { 'x-queue-type': 'stream', 'x-max-age': '1D' } } }
+  ```
 
 ## Breaking changes in 4.0.0
 
