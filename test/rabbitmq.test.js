@@ -327,7 +327,8 @@ test('issue #9: passwords with URL syntax characters log in and are not emitted'
   const passwords = ['/Zm9vYmFy', '?q=1#frag', '#hash', 'a@b:c/d?e#f%25g+h i', '12/34', '%zz'];
   for (const [i, password] of passwords.entries()) {
     await t.test(JSON.stringify(password), async t2 => {
-      const { pool, assertNoSecret } = await credentialPool(t2, `famqp-i9-${process.pid}-${i}`, password);
+      const username = `famqp-i9-${process.pid}-${STARTED}-${i}`;
+      const { pool, assertNoSecret } = await credentialPool(t2, username, password);
       let ready = false;
       pool.on('ready', () => { ready = true; });
       await until(() => ready);
@@ -340,7 +341,8 @@ test('issue #9: passwords with URL syntax characters log in and are not emitted'
 // so a non-ASCII password reaches the broker mangled; the login is refused (README documents it)
 test('issue #9: a non-ASCII password is refused (amqplib limit) and is not emitted', { skip: skipMgmt }, async t => {
   const password = 'pässwörd';
-  const { events, assertNoSecret } = await credentialPool(t, `famqp-i9-${process.pid}-nonascii`, password);
+  const username = `famqp-i9-${process.pid}-${STARTED}-nonascii`;
+  const { events, assertNoSecret } = await credentialPool(t, username, password);
   await until(() => events.some(([n, [a]]) => n === 'error' && /ACCESS_REFUSED|PLAIN login refused/i.test(String(a?.error?.message))));
   assertNoSecret();
 });
@@ -367,7 +369,8 @@ test('#60 a failing permissions PUT in credentialPool leaves no user on the brok
 test('issue #9: vhosts with URL syntax characters, and the default vhost, connect', { skip: skipMgmt, timeout: 60000 }, async t => {
   const u = new URL(URL_);
   const user = decodeURIComponent(u.username);
-  const vhosts = ['/', `/famqp-prod-${process.pid}`, `/famqp-a#b?c-${process.pid}`, `/%famqp-pct-${process.pid}`];
+  const id = `${process.pid}-${STARTED}`;   // #98: the guard lists a vhost this run left
+  const vhosts = ['/', `/famqp-prod-${id}`, `/famqp-a#b?c-${id}`, `/%famqp-pct-${id}`];
   for (const vhost of vhosts) {
     await t.test(JSON.stringify(vhost), async t2 => {
       const name = vhost.slice(1);
@@ -448,7 +451,7 @@ test('issue #31: stop() after a broker-side close resolves, rejects nothing, con
 
 // issue #49: nothing this process declared may outlive the file. Only with the management API.
 const runLeftovers = () =>
-  leftovers(path => mgmt('GET', path), { pid: process.pid, since: STARTED });
+  leftovers(path => mgmt('GET', path), { pid: process.pid, since: STARTED, accounts: true });
 
 // #65: the guard sees a queue this run leaves on the live broker, and stops seeing it once gone
 test('#65 the leak guard reports a queue this run left, and not after it is deleted',

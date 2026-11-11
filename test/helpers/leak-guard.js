@@ -10,8 +10,21 @@ const isOurs = (name, pid, since) => {
   return Boolean(stamp) && Number(stamp[1]) >= since;
 };
 
-async function leftovers(get, { pid, since }) {
+// With `accounts` (#98) it also reads the vhosts and users, whose lists are short and unpaged. A
+// vhost may start with '%' (the #9 vhost row). A dynamic queue's name, <id>:<hostname>, carries
+// no pid or time, so it cannot be matched to this run and is not listed.
+async function accountLeftovers(get, pid, since) {
   const left = [];
+  for (const kind of ['vhosts', 'users']) {
+    for (const { name } of await get(`${kind}?columns=name`)) {
+      if (isOurs(name.replace(/^%/, ''), pid, since)) left.push(`${kind}:${name}`);
+    }
+  }
+  return left;
+}
+
+async function leftovers(get, { pid, since, accounts = false }) {
+  const left = accounts ? await accountLeftovers(get, pid, since) : [];
   for (const kind of ['queues', 'exchanges']) {
     for (let page = 1, pages = 1; page <= pages; page++) {
       const query = `columns=name&name=famqp-&page=${page}&page_size=${PAGE_SIZE}`;

@@ -350,7 +350,7 @@ test('SIGINT closes the live pool connection on the broker',
         headers: { authorization: auth, 'content-type': 'application/json' },
         body: body && JSON.stringify(body)
       });
-      user = `sigintlog-${process.pid}`;
+      user = `famqp-sigintlog-${process.pid}-${STARTED}`;   // #98: the guard lists it if left
       pass = 'sigintlog-pass';
       const put = () => api('PUT', `users/${user}`, { password: pass, tags: '' });
       assert.ok((await acquireOwned(t, put, () => api('DELETE', `users/${user}`))).ok);
@@ -402,5 +402,6 @@ test('SIGINT closes the live pool connection on the broker',
 after(async () => {
   if (!LIVE || !MGMT) return;
   const get = (p) => mgmt('GET', p);
-  assert.deepStrictEqual(await leftovers(get, { pid: process.pid, since: STARTED }), []);
+  const since = STARTED;
+  assert.deepStrictEqual(await leftovers(get, { pid: process.pid, since, accounts: true }), []);
 });
