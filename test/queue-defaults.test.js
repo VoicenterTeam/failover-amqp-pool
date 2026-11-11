@@ -340,7 +340,7 @@ test('#78 a wait for ready that gives up carries the pool events it saw', async 
 // `npm test` ran with both URLs on the same broker: p99 146 / 133 ms alone, 171 / 242 ms loaded.
 // A whole row runs longer under the suite (#91): in the PR #84 re-review's n=4 gate runs of
 // `npm test` with both URLs, the two quorum rows took 4735 and 3759 ms on 3.13.7 and 3649 and
-// 2820 ms on 4.3.7, and 264 to 380 ms in the other runs. So the latency asks for up to 4.7 s.
+// 2820 ms on 4.3.7, and 264 to 380 ms in the other runs. So a whole row takes up to 4.7 s.
 // The one recorded timeout waited over 9 s, 37 times the worst p99, so latency does not explain
 // it, and the window is a floor set above that one failure: 50 times the worst p99, the round
 // margin above 37, 12.1 s, 121 polls of 100 ms, 2.6 times the 4.7 s row. A give-up names the
