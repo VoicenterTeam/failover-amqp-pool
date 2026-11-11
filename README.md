@@ -637,6 +637,48 @@ connection URL.
 `'Message is null'` is the broker cancelling a consumer, for example by deleting its queue. The
 channel closes its amqplib channel (already closed is fine), re-creates it and consumes again.
 
+## Delivery guarantees
+
+Channels publish on a confirm channel. Each message that `publish()` or `sendToQueue()` hands
+to amqplib stays in memory until the broker confirms it. A message the broker acks is
+forgotten. A message the broker nacks, or one still unconfirmed when its amqplib channel or the
+connection closes, is handed back in an `'unconfirmed'` event on the `Channel`:
+
+```javascript
+channel.on('unconfirmed', (entries) => {
+  for (const entry of entries) {
+    // publish:     { method: 'publish', msg, topic, props, reason }
+    // sendToQueue: { method: 'sendToQueue', queue, msg, props, reason }
+    // reason: 'nack' or 'closed'
+  }
+});
+```
+
+- `msg` is the message as it was sent (an object is already JSON), and `props` is a copy of
+  the options it was sent with, `messageId` and `timestamp` included. Publishing an entry
+  again with `channel.publish(entry.msg, entry.topic, entry.props)` sends the same content
+  with the same `messageId`.
+- A close hands back all of that channel's unconfirmed messages in one event, in publish
+  order. A nack hands back one message.
+- Each message is handed back at most once, and only after its confirm has failed or its
+  channel has closed, never while its confirm is still pending.
+- The event fires on the next tick, after the channel has handled the close.
+- A publish that throws is not held: the caller already knows it failed.
+
+The pool does not re-publish handed-back messages yet. Until it does, an app that needs them
+listens on each channel, from `amqp.getAllChannels()`.
+
+Re-publishing what comes back makes delivery at-least-once. A message the broker routed but
+whose confirm was lost with the connection is in the queue and is also handed back, so
+consumers can get it twice. Both copies carry the same `messageId`, so a consumer can drop
+the second one.
+
+The messages held are those in flight on each amqplib channel: written to or buffered for
+the socket, and not yet confirmed. RabbitMQ normally confirms within milliseconds, so the
+set stays near the publish rate times the confirm latency. A broker that stops confirming,
+for example under a memory or disk alarm, makes it grow with every publish until confirms
+resume or the channel closes. The socket already buffers the same messages in that case.
+
 ## Graceful Shutdown
 
 To properly close all connections and channels:
