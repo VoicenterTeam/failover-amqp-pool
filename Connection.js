@@ -3,10 +3,18 @@ const EventEmitter = require('events').EventEmitter;
 const os = require('os');
 const { countConnectionError, countReconnect } = require('./telemetry/metrics');
 
-// emitWarning throws on a value that is neither a string nor an Error, and String() can throw
+// emitWarning throws on a value that is neither a string nor an Error, and String() can throw.
+// Node prints an Error's warning a tick later, outside this try, reading its name, message, code
+// and stack: it gets a copy made of strings read here instead, as index.js's SIGINT warn does.
 function warn(value) {
   try {
-    process.emitWarning(value instanceof Error ? value : String(value));
+    if (!(value instanceof Error)) return process.emitWarning(String(value));
+    const copy = new Error(String(value.message));
+    copy.name = String(value.name);
+    const { code, stack } = value;
+    if (code) copy.code = String(code);
+    if (typeof stack === 'string') copy.stack = stack;
+    process.emitWarning(copy);
   } catch {
     process.emitWarning('a listener threw an unprintable value');
   }
