@@ -65,6 +65,22 @@ test('#48 the pool forwards connection with the URL and no username or password'
   assert.strictEqual(got[0], pool.connections[0].safeUrl);
 });
 
+test('#48 a throwing connection listener leaves one broker connection open', async t => {
+  const made = fakeBroker(t);
+  const conn = new Connection(SECRET_URL, { reconnectInterval: 1 });
+  const errors = [];
+  conn.on('error', e => errors.push(e));
+  conn.on('connection', () => { throw new Error('app bug'); });
+  t.after(() => conn.disconnect());
+  conn.start();
+  await turnsUntil(() => errors.length >= 1, 'the listener throw reported');
+  for (let i = 0; i < 20; i++) await new Promise(r => setTimeout(r, 2));   // retries, if any
+  assert.strictEqual(made.length, 1, 'no second connect');
+  assert.strictEqual(conn.alive, true);
+  assert.strictEqual(errors[0].error.message, 'app bug');
+  assert.strictEqual(errors[0].url, SAFE_URL);
+});
+
 // ---- live broker
 
 const URL_ = process.env.FAMQP_TEST_URL;

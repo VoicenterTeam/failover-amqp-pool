@@ -84,8 +84,14 @@ class Connection extends EventEmitter {
           this.alive = true;
           this.emit('info', {message: 'Connection created', url: this.safeUrl});
           this.connection()
-          // once per connect, reconnects included; the URL without username or password
-          this.emit('connection', this.safeUrl);
+          // once per connect, reconnects included; the URL without username or password. A
+          // listener's throw is reported, and must not reach the catch below, which would
+          // connect again beside this live connection.
+          try {
+            this.emit('connection', this.safeUrl);
+          } catch (error) {
+            this.emit('error', { error: error , url: this.safeUrl})
+          }
         })
         .catch((error) => {
           this.alive = false;
