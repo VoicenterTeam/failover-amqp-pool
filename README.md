@@ -102,7 +102,7 @@ Migrating:
   listeners. Its rejection listener only logged, so an app that relied on it to survive an
   unhandled rejection now exits, Node's default. Load `@pm2/io` in the app to keep it. A failed
   connect or a connection error that no `'error'` listener hears, or whose listener throws, does
-  not exit: it is a process warning, and the pool keeps reconnecting, as on SIGINT.
+  not exit: it is a process warning, as on SIGINT, and the pool keeps reconnecting.
 - `connection.metrics` and `channel.metrics` are gone. `channel.isAlive` reads the state
   without the re-create that reading `alive` starts.
 - amqplib 2.3.1 (from 0.10), Node 18 or newer. `heartbeat: 0` still means the server's value.
