@@ -68,6 +68,8 @@ declare class AMQPPool extends EventEmitter {
     on(event: 'recreated', listener: (channel: AMQPPool.Channel) => void): this;
     /** A connection closed (its credential-free url), or a channel closed (no argument). */
     on(event: 'close', listener: (url?: string) => void): this;
+    /** A connection connected, on each connect and reconnect (its credential-free url). */
+    on(event: 'connection', listener: (url: string) => void): this;
     /** A message consumed on any channel. */
     on(event: 'channelMessage', listener: (msg: ConsumeMessage) => void): this;
     /** Connection, channel and publish errors: an Error, or an object with a `message`. */
@@ -84,6 +86,7 @@ declare class AMQPPool extends EventEmitter {
     /** Same overloads as on(). */
     once(event: 'ready' | 'recreated', listener: (channel: AMQPPool.Channel) => void): this;
     once(event: 'close', listener: (url?: string) => void): this;
+    once(event: 'connection', listener: (url: string) => void): this;
     once(event: 'channelMessage', listener: (msg: ConsumeMessage) => void): this;
     once(event: 'error' | 'info', listener: (payload: any) => void): this;
     once<E extends string | symbol>(
@@ -134,7 +137,8 @@ declare namespace AMQPPool {
     }
 
     /** Every event name the pool emits with a typed payload. */
-    type PoolEvent = 'ready' | 'recreated' | 'close' | 'channelMessage' | 'error' | 'info';
+    type PoolEvent =
+        'ready' | 'recreated' | 'close' | 'connection' | 'channelMessage' | 'error' | 'info';
 
     // Actually options are different for Queue, Exchange, Channel and so on...
     // Here we just put all the things into one object and make all props non mandatory
