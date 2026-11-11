@@ -78,10 +78,8 @@ class Connection extends EventEmitter {
           this.alive = true;
           this.emit('info', {message: 'Connection created', url: this.safeUrl});
           this.connection()
-        })
-        .then(() => {
-          //this.emit('connection', this);
-          //console.log('Ok');
+          // once per connect, reconnects included; the URL without username or password
+          this.emit('connection', this.safeUrl);
         })
         .catch((error) => {
           this.alive = false;
