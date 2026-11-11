@@ -59,7 +59,9 @@ const CHILD = `
     settle();
   };
   const onInfo = (m) => heard({ info: m });
-  if (cfg.throwingListener) pool.on('info', () => { if (armed) throw new Error('listener'); });
+  if (cfg.throwingListener) pool.on('info', () => {
+    if (armed) throw cfg.throwingListener === 'object' ? { code: 7 } : new Error('listener');
+  });
   pool.on('info', onInfo);
   if (!cfg.noErrorListener) pool.on('error', (e) => heard({ error: e.message }));
   if (cfg.throwOnDisconnect) {
@@ -165,6 +167,19 @@ test('a listener that throws is warned about, and the next listener still hears'
   assert.deepStrictEqual(r.find('warning'), [{ warning: 'listener' }]);
   assert.strictEqual(r.find('info').length, 1);
   assert.deepStrictEqual(r.find('unhandled'), []);
+});
+
+test('a listener that throws a plain object is warned about, and the log finishes', async (t) => {
+  const r = run(t, {
+    connection: closedPort, fake: true, hold: true, throwingListener: 'object', final: true
+  });
+  await r.until('ready', (l) => l.ready);
+  r.child.kill('SIGINT');
+  await r.until('final', (l) => l.finalDone);
+  assert.deepStrictEqual(r.find('unhandled'), []);
+  assert.deepStrictEqual(r.find('warning'), [{ warning: '[object Object]' }]);
+  assert.strictEqual(r.find('info').length, 1);
+  assert.strictEqual(r.find('final')[0].infoListeners, 0);
 });
 
 test('the SIGINT info arrives after stop() has closed every connection', async (t) => {

@@ -72,6 +72,8 @@ class AMQPPool extends EventEmitter {
   // app's 'info' and 'error' ones are put back for the one log and taken off again. Nothing here
   // may reject: a failure nobody hears, and a listener that throws, become process warnings.
   #onSigint = async () => {
+    // emitWarning throws on a value that is neither a string nor an Error
+    const warn = (value) => process.emitWarning(value instanceof Error ? value : String(value));
     const stops = this.#stops;
     const heard = { info: this.rawListeners('info'), error: this.rawListeners('error') };
     let failure;
@@ -81,7 +83,10 @@ class AMQPPool extends EventEmitter {
       failure = err;
     }
     // another stop() ran meanwhile: the app stopped this pool, and has nothing to hear
-    if (this.#stops !== stops + 1) return failure && process.emitWarning(failure);
+    if (this.#stops !== stops + 1) {
+      if (failure) warn(failure);
+      return;
+    }
     const restored = [];
     for (const event of Object.keys(heard)) {
       for (const fn of heard[event]) {
@@ -91,13 +96,13 @@ class AMQPPool extends EventEmitter {
       }
     }
     // stop() leaves one no-op 'error' listener of its own; with only that, nobody hears
-    if (failure && this.rawListeners('error').length <= 1) process.emitWarning(failure);
+    if (failure && this.rawListeners('error').length <= 1) warn(failure);
     const [event, payload] = failure ? ['error', failure] : ['info', 'Pool stopped on SIGINT'];
     for (const fn of this.rawListeners(event)) {
       try {
         fn.call(this, payload);
       } catch (err) {
-        process.emitWarning(err);
+        warn(err);
       }
     }
     for (const [name, fn] of restored) this.off(name, fn);
