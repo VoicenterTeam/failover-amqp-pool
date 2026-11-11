@@ -217,7 +217,7 @@ class AMQPPool extends EventEmitter {
     let channels = this.getAliveChannels();
     if (typeof filter == 'function') {
       let filteredChannels = filter(channels);
-      if (!filteredChannels) this.msgCache.push({msg, filter, topic, props});
+      if (!filteredChannels) this.#cache({msg, filter, topic, props});
       else {
         if (filteredChannels instanceof Channel) filteredChannels = [filteredChannels];
         for (let channelIndex in filteredChannels) {
@@ -234,7 +234,7 @@ class AMQPPool extends EventEmitter {
         }
         this.#publishOn(channels[this.rr_i++], {msg, filter, topic, props}, false);
       } else {
-        this.msgCache.push({msg, filter, topic, props});
+        this.#cache({msg, filter, topic, props});
       }
     } else if (filter === 'all') {
       if (channels.length > 0) {
@@ -244,13 +244,13 @@ class AMQPPool extends EventEmitter {
           this.#publishOn(channel, {msg, filter: only, topic, props}, false);
         }
       } else {
-        this.msgCache.push({msg, filter, topic, props});
+        this.#cache({msg, filter, topic, props});
       }
     } else { // first alive
       if (channels.length > 0) {
         this.#publishOn(channels[0], {msg, filter, topic, props}, true);
       } else {
-        this.msgCache.push({msg, filter, topic, props});
+        this.#cache({msg, filter, topic, props});
       }
     }
   }
@@ -273,12 +273,21 @@ class AMQPPool extends EventEmitter {
   }
 
   #dropForClosed(channel, props) {
-    this.emit('info', {
+    this.emit('info', this.#closedDrop(channel, props));
+  }
+
+  #closedDrop(channel, props) {
+    return {
       message: 'cached message dropped',
       messageId: props?.messageId,
       channelId: channel._id,
       reason: 'channel is closed'
-    });
+    };
+  }
+
+  // The one way into the cache: every message kept for start()'s retry is added here
+  #cache(entry) {
+    this.msgCache.push(entry);
   }
 
   // A failed publish is cached and retried by start(). A RangeError is amqplib refusing the
@@ -290,7 +299,7 @@ class AMQPPool extends EventEmitter {
     } catch (e) {
       const refused = e instanceof RangeError;
       if ((reportError || refused) && !this.#stopped) this.emit('error', e);
-      if (!refused) this.msgCache.push(entry);
+      if (!refused) this.#cache(entry);
     }
   }
 
