@@ -175,24 +175,29 @@ test('#62 a real close after the expected 404 still emits close', async () => {
   channel.create();
   await settle();
   assert.deepStrictEqual(of('close'), []);
-  last().emit('close'); // the declared channel is lost: one container, the exempt 404 and a real close
+  // the declared channel is lost: one container, the exempt 404 and a real close
+  last().emit('close');
   assert.strictEqual(of('close').length, 1);
   assert.strictEqual(channel.isAlive, false);
 });
 
-test('#62 a close that is not the check 404 emits close, while the check is in flight too', async () => {
-  const { channel, of } = setup(named(), () => {
+test('#62 a close that is not the check 404 emits close, the check in flight', async () => {
+  const { channel, of } = setup(named(), (i) => {
     const c = new FakeAmqpChannel();
-    c.checkQueue = () => {
-      c.emit('close');
-      return Promise.reject(new Error('Channel closed'));
-    }; // lost, no 404
+    // the create's own cleanup close must not emit, or it would satisfy the count by itself
+    c.close = () => Promise.resolve();
+    if (i === 0) {
+      c.checkQueue = () => {
+        c.emit('close'); // lost, no 404
+        return Promise.reject(new Error('Channel closed'));
+      };
+    }
     return c;
   });
+  const up = new Promise((r) => channel.once('ready', r)); // the retry succeeds
   channel.create();
-  await settle();
-  channel.close();
-  assert.ok(of('close').length >= 1, 'the close reached the app');
+  await up;
+  assert.strictEqual(of('close').length, 1, 'the one close reached the app');
 });
 
 test('#62 close() of a live channel emits close', async () => {
@@ -279,7 +284,8 @@ test('#63 a create that fails twice emits one error per attempt', async () => {
 test('#63 a channel error during a create that then succeeds is reported once', async () => {
   const { channel, of } = setup({ exchange: { name: 'events', type: 'fanout' } }, (i) => {
     const c = new FakeAmqpChannel();
-    if (i === 0) refuse(c, 'assertExchange', 406, 40); // the durable escape: a new channel carries on
+    // the durable escape: a new channel carries on
+    if (i === 0) refuse(c, 'assertExchange', 406, 40);
     return c;
   });
   const up = new Promise((r) => channel.once('ready', r));
@@ -298,4 +304,22 @@ test('#63 an error on a created channel is emitted at once, once', async () => {
   last().emit('error', broker(404));
   assert.strictEqual(of('error').length, 1);
   assert.strictEqual(of('error')[0].code, 404);
+});
+
+test('#63 a recovered durable escape that then fails on a 403 reports the 406 and the 403', async () => {
+  const config = { exchange: { name: 'events', type: 'fanout' }, queue: { name: 'work' } };
+  const { channel, of, log } = setup(config, (i) => {
+    const c = new FakeAmqpChannel();
+    if (i % 2 === 0)
+      refuse(c, 'assertExchange', 406, 40); // the escape, then the next channel
+    else refuse(c, 'checkQueue', 403); // refuses the queue check
+    return c;
+  });
+  channel.create();
+  for (let i = 0; i < 500 && failed(log) < 1; i++) await new Promise((r) => setTimeout(r, 2));
+  channel.close();
+  const [held, wrapped] = of('error');
+  assert.strictEqual(held.code, 406, 'the recovered escape is still reported');
+  assert.strictEqual(wrapped.message, 'cant establish a channel');
+  assert.strictEqual(wrapped.err.code, 403);
 });

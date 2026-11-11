@@ -137,6 +137,7 @@ async function livePool(t, channelConf) {
   const connection_name = unique('conn');
   const admin = await amqplib.connect(URL_);
   const adminCh = await admin.createChannel();
+  adminCh.on('error', () => {});
   const queues = [];
   const pool = new AMQPPool([{
     connection: { host: u.hostname, port: Number(u.port), username: decodeURIComponent(u.username),
@@ -150,8 +151,18 @@ async function livePool(t, channelConf) {
     const stopped = pool.stop();
     pool.on('error', () => {});
     await stopped.catch(() => {});
-    for (const q of queues) await adminCh.deleteQueue(q).catch(() => {});
-    await adminCh.deleteExchange(exchange).catch(() => {});
+    // one fresh channel per delete: a refused delete (an exclusive queue held by its connection)
+    // closes its channel, which must not stop the deletes after it or leave the process alive
+    const drop = async (kind, name) => {
+      try {
+        const c = await admin.createChannel();
+        c.on('error', () => {});
+        await c[kind](name).catch(() => {});
+        await c.close().catch(() => {});
+      } catch (e) {} // the admin connection is gone
+    };
+    for (const q of queues) await drop('deleteQueue', q);
+    await drop('deleteExchange', exchange);
     await admin.close().catch(() => {});
   });
   return { pool, adminCh, exchange, errors, queues, connectionName: `${connection_name}_${os.hostname}` };
@@ -175,7 +186,7 @@ test('live: a dynamic queue reconnect emits no error and consumes again',
   const done = consuming(ch);
   ch.consume();
   await done;
-  queues.push(ch.queue.name);
+  // the dynamic queue is exclusive: it goes with its connection
   t.after(() => mgmt('DELETE', queuePath(ch.queue.name)));
   assert.deepStrictEqual(errors, []);
   const recreated = waitEvent(pool, 'recreated');

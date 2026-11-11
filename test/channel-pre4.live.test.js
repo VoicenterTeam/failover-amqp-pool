@@ -40,6 +40,7 @@ async function livePool(t, channelConf, user) {
   const connection_name = unique('conn');
   const admin = await amqplib.connect(URL_);
   const adminCh = await admin.createChannel();
+  adminCh.on('error', () => {});
   await adminCh.assertExchange(exchange, 'fanout', { durable: false });
   const queues = [];
   const pool = new AMQPPool([
@@ -63,8 +64,18 @@ async function livePool(t, channelConf, user) {
   t.after(async () => {
     const stopped = pool.stop();
     await stopped.catch(() => {});
-    for (const q of queues) await adminCh.deleteQueue(q).catch(() => {});
-    await adminCh.deleteExchange(exchange).catch(() => {});
+    // one fresh channel per delete: a refused delete (an exclusive queue held by its connection)
+    // closes its channel, which must not stop the deletes after it or leave the process alive
+    const drop = async (kind, name) => {
+      try {
+        const c = await admin.createChannel();
+        c.on('error', () => {});
+        await c[kind](name).catch(() => {});
+        await c.close().catch(() => {});
+      } catch (e) {} // the admin connection is gone
+    };
+    for (const q of queues) await drop('deleteQueue', q);
+    await drop('deleteExchange', exchange);
     await admin.close().catch(() => {});
   });
   return {
@@ -151,7 +162,7 @@ test(
       'consuming',
       90,
     );
-    queues.push(ch.queue.name);
+    // the dynamic queue is exclusive: it goes with its connection
     await closeConnection(await connectionNamed(connectionName));
     await until(seen(of, 'recreated'), 're-created', 90);
     assert.strictEqual(count(of, 'close', bare), 1, 'the real close of the lost connection only');

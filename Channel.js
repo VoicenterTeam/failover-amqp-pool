@@ -223,6 +223,9 @@ class Channel extends EventEmitter {
             return this.amqpChannel.assertExchange(this.exchange.name, this.exchange.type, this.exchangeOptions).catch( error => {
               if(error.code === 406 && error.classId === 40){
                 this.emit('info', {message: `Durable Escape for connect`})
+                // the escape recovers from this error: it is reported here, not lost to a later failure
+                if (this.#createFailure) this.emit('error', this.#createFailure);
+                this.#createFailure = null;
                 return this.#createChannel();
               }
               // a close() rejects the pending assert: not an error to report
@@ -394,7 +397,10 @@ class Channel extends EventEmitter {
             // it. A close() that rejects or throws means it is already closed, which is the aim.
             try { Promise.resolve(this.amqpChannel.close()).catch(() => {}); } catch (e) {}   // closed
             this.create();
-            this.emit('error', {message: 'Message is null', channelId: this._id, queue: this.queue?.name, exchange: this.exchange?.name})
+            this.emit('error', {
+              message: 'Message is null', channelId: this._id,
+              queue: this.queue?.name, exchange: this.exchange?.name
+            })
           } else {
             deliveredOn.set(m, amqpChannel);
             m.properties.channelId = this._id;

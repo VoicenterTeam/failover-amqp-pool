@@ -141,12 +141,13 @@ Migrating:
   channel not alive, emits an `'info'` event
   `{ message: 'channel create failed', channelId, queue, exchange, error }` (no
   `'channel created'` info), and retries with backoff (see [Channel re-creates](#channel-re-creates)).
-- A failed create emits one `'error'`, `{ message: 'cant establish a channel', err }`, where `err`
+- A failed create emits one `'error'` from the channel, `{ message: 'cant establish a channel', err }`, where `err`
   is the broker's refusal with its `code` (for example 403 or 406). Before, the refusal reached
   the app as well on its own (the broker's error, once from the channel and once from the queue
   check, or `'cant assert a exchange ...'` for a refused exchange), so code that read `e.code` on
   those reads `e.err.code` on this one. A refusal the create recovers from (a durable exchange
-  that is declared otherwise) is still reported once, as the broker's error.
+  that is declared otherwise) is still reported once, as the broker's error. A connection that
+  drops mid-create also reports its own connection `'error'`, as before.
 
 ## Installation
 
