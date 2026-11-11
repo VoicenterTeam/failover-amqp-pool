@@ -425,6 +425,13 @@ what it threw, and the message is dropped with one `'info'` event,
 `{ message: 'cached message dropped', messageId, reason: 'filter threw' }`. A filter that throws
 during a `publish()` call throws to that call, and nothing is cached.
 
+The tick runs in a timer, where a throw would end the process. So when no `'error'` listener of
+yours hears one of the tick's errors, the pool writes it as a process warning instead, and a
+listener that throws on the tick's events is a process warning too. A `publish()` call that
+fails with no `'error'` listener throws that error to the call, as an `EventEmitter` does, and
+caches nothing, so publishing again sends the message once. With a listener, the message is
+cached first and your listener hears the error after.
+
 ## Full Configuration Options
 
 ```javascript
