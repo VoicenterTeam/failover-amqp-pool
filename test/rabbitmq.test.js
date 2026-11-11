@@ -22,7 +22,7 @@ async function setup(t) {
   const queue = `famqp-test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const admin = await amqplib.connect(URL_);
   const adminCh = await admin.createChannel();
-  await adminCh.assertQueue(queue, { durable: true, autoDelete: false });
+  await adminCh.assertQueue(queue, { durable: true, autoDelete: false, arguments: { 'x-expires': 600000 } });
   const pool = new AMQPPool([{
     connection: { host: u.hostname, port: Number(u.port), username: decodeURIComponent(u.username), password: decodeURIComponent(u.password), ssl: false, reconnectInterval: 50 },
     channel: { prefetch: 20, queue: { name: queue } }
@@ -159,7 +159,14 @@ test('issue #5: a create that fails on a locked queue stays dead and retries unt
   t.after(() => admin.close().catch(() => {}));
   const adminCh = await admin.createChannel();
   await adminCh.assertQueue(queue, { exclusive: true });   // 405 RESOURCE_LOCKED for any other connection
-  const { pool, errors } = poolFor(t, { prefetch: 1, queue: { name: queue, options: { autoDelete: true } } });
+  const { pool, errors } = poolFor(t, { prefetch: 1, queue: { name: queue, options: { autoDelete: true, arguments: { 'x-expires': 600000 } } } });
+  // The pool's retry declares this name after the admin deleted it, and its autoDelete never
+  // fires without a consumer. poolFor's hook stops the pool; this one, registered after it,
+  // deletes the queue on its own connection so it runs even when the test fails midway.
+  t.after(async () => {
+    const c = await amqplib.connect(URL_);
+    try { await (await c.createChannel()).deleteQueue(queue); } finally { await c.close().catch(() => {}); }
+  });
   let ready = 0;
   pool.on('ready', () => ready++);
   await until(() => errors.some(e => e?.message === 'cant establish a channel' && e.err?.code === 405));
@@ -198,7 +205,7 @@ test('issue #5: a re-create that fails on a deleted exchange retries and recover
     await admin.close().catch(() => {});
   });
   await adminCh.assertExchange(exchange, 'direct', { durable: false });
-  await adminCh.assertQueue(queue, { durable: true });
+  await adminCh.assertQueue(queue, { durable: true, arguments: { 'x-expires': 600000 } });
   const { pool, errors } = poolFor(t, { prefetch: 1, exchange: { name: exchange }, queue: { name: queue }, binding: { enabled: true, pattern: 'k' } });
   let ch, recreated = 0;
   pool.on('ready', c => { ch = c; });
