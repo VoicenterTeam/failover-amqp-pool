@@ -17,6 +17,23 @@ const QUORUM_CONSUMER_TIMEOUT = 7200000;
 // the longest wait setTimeout takes, ms; a longer one would fire at once
 const MAX_WAIT = 2147483647;
 
+// A process warning that must not throw itself; the same as index.js's. emitWarning throws on a
+// value that is neither a string nor an Error, and String() can throw. Node prints an Error's
+// warning a tick later, reading its fields: it gets a copy made of strings read here instead.
+function warn(value) {
+  try {
+    if (!(value instanceof Error)) return process.emitWarning(String(value));
+    const copy = new Error(String(value.message));
+    copy.name = String(value.name);
+    const { code, stack } = value;
+    if (code) copy.code = String(code);
+    if (typeof stack === 'string') copy.stack = stack;
+    process.emitWarning(copy);
+  } catch {
+    process.emitWarning('unprintable value');
+  }
+}
+
 class Channel extends EventEmitter {
   #isAlive= false;
   #isConnecting = false;
@@ -376,6 +393,21 @@ class Channel extends EventEmitter {
     pending?.add(entry);
     return result;
   }
+  // Runs what follows a send. A listener's throw is reported as 'error', or with no 'error'
+  // listener (or one that throws too) as a process warning; it never reaches the caller, who
+  // would take the written message for a failed one and send it again.
+  #afterSend(fn){
+    try {
+      fn();
+    } catch (err) {
+      try {
+        if (this.listenerCount('error') === 0) return warn(err);
+        this.emit('error', err);
+      } catch (again) {
+        warn(again);
+      }
+    }
+  }
   #heldCount(){
     let count = 0;
     for (const pending of this.#held) count += pending.size;
@@ -483,11 +515,14 @@ class Channel extends EventEmitter {
           countSent(this.connection.url, named, thrownType(error));
           throw error;
         }
-        this.emit("info", {
-          message: 'message published', options: options,
-          exchange: options.exchange || this.exchange, url: this.connection.safeUrl
-        })
-        countSent(this.connection.url, named);
+        // amqplib has the message: a listener's throw from here on is not a failed publish
+        this.#afterSend(() => {
+          this.emit("info", {
+            message: 'message published', options: options,
+            exchange: options.exchange || this.exchange, url: this.connection.safeUrl
+          })
+          countSent(this.connection.url, named);
+        });
       } else {
         countSent(this.connection.url, this.#exchangeName(options), 'channel_dead');
         this.emit('error', {
