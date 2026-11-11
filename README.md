@@ -410,6 +410,21 @@ nothing for it: each closed channel it returns drops the message with one `'info
 `{ message: 'cached message dropped', messageId, channelId, reason: 'channel is closed' }`.
 A returned channel that is down but not closed keeps the message cached until it is alive again.
 
+A message is cached once, however many of the channels a custom filter returns fail, and a
+retry publishes it only on the returned channels that have not taken it yet.
+`start(msgCacheInterval)` retries the cache every `msgCacheInterval` ms (default 2000), oldest
+first, and a tick delivers one cached message. A message that cannot go out yet keeps its
+place, and does not hold back a newer one that a live channel takes. A channel that fails in a
+tick is not tried again in that tick, so the messages waiting for it keep their order. The tick
+reports only the first failed channel as an `'error'`; a down `Channel` that the tick tries also
+emits its own `'channel is dead!'` error, which the pool forwards. A message that a listener
+publishes during a tick and that is cached waits behind the ones cached before it.
+
+A custom filter that throws while a tick retries its message is reported as an `'error'`, with
+what it threw, and the message is dropped with one `'info'` event,
+`{ message: 'cached message dropped', messageId, reason: 'filter threw' }`. A filter that throws
+during a `publish()` call throws to that call, and nothing is cached.
+
 ## Full Configuration Options
 
 ```javascript
