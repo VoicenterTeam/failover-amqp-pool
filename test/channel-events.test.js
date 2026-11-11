@@ -306,7 +306,7 @@ test('#63 an error on a created channel is emitted at once, once', async () => {
   assert.strictEqual(of('error')[0].code, 404);
 });
 
-test('#63 a recovered durable escape that then fails on a 403 reports the 406 and the 403', async () => {
+test('#63 a durable escape that then fails on a 403 reports the 406 and the 403', async () => {
   const config = { exchange: { name: 'events', type: 'fanout' }, queue: { name: 'work' } };
   const { channel, of, log } = setup(config, (i) => {
     const c = new FakeAmqpChannel();
