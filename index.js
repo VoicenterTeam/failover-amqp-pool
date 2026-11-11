@@ -143,8 +143,6 @@ class AMQPPool extends EventEmitter {
     // stop() clears only the last timer, so a restart replaces the one running
     clearInterval(this.interval);
     this.interval = setInterval(() => {
-      // a timer of an earlier start() outlives stop(), which clears only the last one
-      if (this.#stopped) return;
       if (this.msgCache.length > 0 && this.getAllChannels().length > 0) {
         let m = this.msgCache.shift();
         this.publish(m.msg, m.filter, m.topic, m.props);
@@ -231,7 +229,8 @@ class AMQPPool extends EventEmitter {
       if (channels.length > 0) {
         for (let channelIndex in channels) {
           const channel = channels[channelIndex];
-          this.#publishOn(channel, {msg, filter: this.#onlyChannel(channel), topic, props}, false);
+          const only = this.#onlyChannel(channel);
+          this.#publishOn(channel, {msg, filter: only, topic, props}, false);
         }
       } else {
         this.msgCache.push({msg, filter, topic, props});
@@ -255,13 +254,11 @@ class AMQPPool extends EventEmitter {
       if (alive.includes(channel)) return [channel];
       if (!this.getAllChannels().includes(channel)) return [];
       if (!channel.isClosed) return null;
-      if (!this.#stopped) {
-        this.emit('info', {
-          message: 'cached message dropped',
-          channelId: channel._id,
-          reason: 'channel is closed'
-        });
-      }
+      this.emit('info', {
+        message: 'cached message dropped',
+        channelId: channel._id,
+        reason: 'channel is closed'
+      });
       return [];
     };
     retryFilters.add(filter);

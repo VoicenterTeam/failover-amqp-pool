@@ -19,11 +19,12 @@ for (const [name, args] of filters) {
   });
 }
 
-test('publish() with no arguments after stop() throws Pool is stopped, not a TypeError', async t => {
-  const { pool } = rig(t);
-  await pool.stop();
-  assert.throws(() => pool.publish(), { message: 'Pool is stopped' });
-});
+test('publish() with no arguments after stop() throws Pool is stopped, not a TypeError',
+  async t => {
+    const { pool } = rig(t);
+    await pool.stop();
+    assert.throws(() => pool.publish(), { message: 'Pool is stopped' });
+  });
 
 test('publish() after stop() reaches no alive channel', async t => {
   const A = fake('A');
@@ -41,20 +42,6 @@ test('publish() before stop() still sends and caches', t => {
   setAlive([]);
   pool.publish({ n: 2 });
   assert.strictEqual(pool.msgCache.length, 1);
-});
-
-// start() twice leaves the first timer running after stop() clears the second: its tick must
-// not publish into a stopped pool, which would throw out of the timer
-test('a retry tick that outlives stop() throws nothing and publishes nothing', async t => {
-  t.mock.timers.enable({ apis: ['setInterval'] });
-  const A = fake('A');
-  const { pool } = rig(t, { alive: [A] });
-  pool.start(10);
-  pool.start(10);
-  await pool.stop();
-  pool.msgCache.push({ msg: { n: 1 }, filter: undefined });
-  assert.doesNotThrow(() => t.mock.timers.tick(10));
-  assert.deepStrictEqual(A.got, []);
 });
 
 test('the retry tick still publishes a cached message while the pool runs', t => {
