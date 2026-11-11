@@ -77,8 +77,13 @@ test('#90 a throwing error listener on the connection report leaves 1 open', asy
   assert.deepStrictEqual(r.warnings.map(w => w.message), ['error bug']);
 });
 
-// a warning by its fields: Node's unhandled 'error' by its code, else its message
-const fields = w => (w.code ? [w.code] : [w.message]);
+// warnings by their fields: Node's unhandled 'error' by its code and the payload error's text,
+// found in its message; any other warning by its message
+function assertWarned(warnings, wanted) {
+  const text = i => (warnings[i].message.includes(wanted[i]?.[1]) ? wanted[i][1] : null);
+  const got = warnings.map((w, i) => (w.code ? [w.code, text(i)] : [w.message]));
+  assert.deepStrictEqual(got, wanted);
+}
 // more of the class: each throw in the connect chain, and the report of it throwing too
 const rows = [
   ['info and error listeners both throw', conn => {
@@ -87,7 +92,7 @@ const rows = [
   }, [['error bug']]],
   ['info throws with no error listener', conn => {
     conn.on('info', created(boom('info bug')));
-  }, [['ERR_UNHANDLED_ERROR']]],
+  }, [['ERR_UNHANDLED_ERROR', 'info bug']]],
   ['a channel create throws and the error listener throws', conn => {
     conn.addChannel({ create: boom('create bug') });
     conn.on('error', boom('error bug'));
@@ -110,7 +115,7 @@ for (const [name, wire, warned] of rows) {
     const r = await run(t, wire);
     assert.strictEqual(r.open(), 1);
     assert.strictEqual(r.made.length, 1);
-    assert.deepStrictEqual(r.warnings.map(fields), warned);
+    assertWarned(r.warnings, warned);
   });
 }
 
@@ -126,7 +131,7 @@ function flakyBroker(t, fails) {
 }
 const catchRows = [
   ['the error listener throws', conn => conn.on('error', boom('error bug')), [['error bug']]],
-  ['no error listener', () => {}, [['ERR_UNHANDLED_ERROR']]],
+  ['no error listener', () => {}, [['ERR_UNHANDLED_ERROR', 'refused']]],
 ];
 for (const [name, wire, warned] of catchRows) {
   test(`#90 failed connect, ${name}: the retry connects`, async t => {
@@ -140,7 +145,7 @@ for (const [name, wire, warned] of catchRows) {
     assert.strictEqual(broker.calls(), 2);
     assert.strictEqual(broker.open(), 1);
     assert.strictEqual(conn.alive, true);
-    assert.deepStrictEqual(warnings.map(fields), warned);
+    assertWarned(warnings, warned);
   });
 }
 
@@ -182,7 +187,7 @@ test('#90 a Connecting listener throwing on the retry: the reconnect happens', a
 // ---- the connection's 'error' after connect: with no listener, or a throwing one, it warns
 
 const afterRows = [
-  ['no error listener', () => {}, [['ERR_UNHANDLED_ERROR']]],
+  ['no error listener', () => {}, [['ERR_UNHANDLED_ERROR', 'socket gone']]],
   ['the error listener throws', conn => conn.on('error', boom('error bug')), [['error bug']]],
 ];
 for (const [name, wire, warned] of afterRows) {
@@ -190,34 +195,42 @@ for (const [name, wire, warned] of afterRows) {
     const r = await run(t, wire);
     assert.doesNotThrow(() => r.made[0].emit('error', new Error('socket gone')));
     await turns(1);
-    assert.deepStrictEqual(r.warnings.map(fields), warned);
+    assertWarned(r.warnings, warned);
   });
 }
 
 // ---- a warning Node prints a tick later reads only strings copied inside the try
 
 // a child: the 'Connecting' and the refused connect each report through a throwing 'error'
-// listener, whose Error has a throwing message getter; it prints the warnings as JSON
+// listener, which throws the Error argv[2] names; it prints the warnings as JSON
 const CHILD = `
 const Connection = require(process.argv[1]);
 const got = [];
 process.on('warning', w => got.push(w.message));
 process.on('exit', () => console.log(JSON.stringify(got)));
-const bad = new Error('x');
-Object.defineProperty(bad, 'message', { get() { throw new Error('getter'); } });
+const bad = new Error('readable');
+const bomb = name => () => { throw new Error(name); };
+if (process.argv[2] === 'getter') Object.defineProperty(bad, 'message', { get: bomb('getter') });
+if (process.argv[2] === 'toString') bad.toString = bomb('toString bomb');
 const conn = new Connection('amqp://127.0.0.1:1/', { reconnectInterval: 1 });
 conn.on('info', () => { throw new Error('info bug'); });
 conn.on('error', () => { throw bad; });
 conn.start();
 conn.disconnect();
 `;
-test('#90 an Error whose message getter throws: warned as unprintable, exit 0', () => {
-  const child = spawnSync(process.execPath, ['-e', CHILD, require.resolve('../Connection')],
-    { encoding: 'utf8', timeout: 30000 });
-  assert.strictEqual(child.status, 0, child.stderr);
-  const unprintable = 'a listener threw an unprintable value';
-  assert.deepStrictEqual(JSON.parse(child.stdout), [unprintable, unprintable]);
-});
+const unprintable = 'a listener threw an unprintable value';
+const childRows = [
+  ['getter', 'a throwing message getter: warned as unprintable', [unprintable, unprintable]],
+  ['toString', 'an own toString that throws: warned by its message', ['readable', 'readable']],
+];
+for (const [kind, name, warned] of childRows) {
+  test(`#90 an Error with ${name}, exit 0`, () => {
+    const child = spawnSync(process.execPath,
+      ['-e', CHILD, require.resolve('../Connection'), kind], { encoding: 'utf8', timeout: 30000 });
+    assert.strictEqual(child.status, 0, child.stderr);
+    assert.deepStrictEqual(JSON.parse(child.stdout), warned);
+  });
+}
 
 // ---- live broker
 
