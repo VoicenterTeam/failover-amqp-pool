@@ -519,6 +519,9 @@ new amqplib channel, unless `close()` was called on it: `close()` is final. Afte
 instead. `amqp.removeChannelById(id)` closes the channel and removes it, and resolves also
 for a channel that is already dead.
 
+`channel.isClosed` is `true` once `close()` was called on the channel, and stays `true`. It is
+`false` on a new channel and while the channel is down and being re-created.
+
 - `'ready'` fires once per `Channel`, on its first create. Attaching `channel.on('message', ...)`
   inside a `'ready'` listener is safe: the listener runs once, so handlers do not stack up.
 - `'recreated'` fires with the same `Channel` after each later re-create. Nothing needs to be

@@ -71,6 +71,10 @@ class Channel extends EventEmitter {
   set alive(isAlive){
     this.#isAlive = isAlive;
   }
+  // true once close() was called: final, no re-create follows
+  get isClosed(){
+    return this.#closed;
+  }
   // alive without its side effect: reading `alive` re-creates a dead channel
   get isAlive(){
     return this.#isAlive;
