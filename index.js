@@ -5,6 +5,26 @@ const { watchPool } = require('./telemetry/metrics');
 // Filters built by #onlyChannel: their failed retries stay silent, as an 'all' publish is.
 const retryFilters = new WeakSet();
 
+// A process warning for a value nobody else will hear, which must not throw itself.
+// emitWarning throws on a value that is neither a string nor an Error, and String() throws
+// on an object with no prototype or a toString that throws
+// (instanceof runs a Proxy's getPrototypeOf trap, and emitWarning reads an Error's name).
+// Node prints an Error's warning a tick later, outside this try, reading its code, detail,
+// stack and toString: it gets a copy made of strings read here instead.
+function warn(value) {
+  try {
+    if (!(value instanceof Error)) return process.emitWarning(String(value));
+    const copy = new Error(String(value.message));
+    copy.name = String(value.name);
+    const { code, stack } = value;
+    if (code) copy.code = String(code);
+    if (typeof stack === 'string') copy.stack = stack;
+    process.emitWarning(copy);
+  } catch {
+    process.emitWarning('unprintable value');
+  }
+}
+
 function build(pool, parsedConfig){
   let url = _buildUrl(pool.connection);
   parsedConfig[url] = (pool.hasOwnProperty(url)) ? parsedConfig[url] : {};
@@ -72,24 +92,6 @@ class AMQPPool extends EventEmitter {
   // app hears the one log. Nothing here may reject: a failure nobody hears, and a listener that
   // throws, become process warnings.
   #onSigint = async () => {
-    // emitWarning throws on a value that is neither a string nor an Error, and String() throws
-    // on an object with no prototype or a toString that throws
-    // (instanceof runs a Proxy's getPrototypeOf trap, and emitWarning reads an Error's name).
-    // Node prints an Error's warning a tick later, outside this try, reading its code, detail,
-    // stack and toString: it gets a copy made of strings read here instead.
-    const warn = (value) => {
-      try {
-        if (!(value instanceof Error)) return process.emitWarning(String(value));
-        const copy = new Error(String(value.message));
-        copy.name = String(value.name);
-        const { code, stack } = value;
-        if (code) copy.code = String(code);
-        if (typeof stack === 'string') copy.stack = stack;
-        process.emitWarning(copy);
-      } catch {
-        process.emitWarning('unprintable value');
-      }
-    };
     let failed = false;
     let failure;
     try {
@@ -111,6 +113,8 @@ class AMQPPool extends EventEmitter {
   // Listeners the pool put on its Connections and Channels, per emitter: what stop() takes off
   #wired = new WeakMap();
   #stopped = false;
+  // Per cached entry, the channels it is done with: they took its message, or are closed
+  #done = new WeakMap();
 
   // A stopped pool is final: it opens, creates and sends nothing. The code lets a caller match
   // the error without its text.
@@ -151,12 +155,37 @@ class AMQPPool extends EventEmitter {
     this.#assertRunning();
     // stop() clears only the last timer, so a restart replaces the one running
     clearInterval(this.interval);
-    this.interval = setInterval(() => {
-      if (this.msgCache.length > 0 && this.getAllChannels().length > 0) {
-        let m = this.msgCache.shift();
-        this.publish(m.msg, m.filter, m.topic, m.props);
-      }
-    }, msgCacheInterval);
+    this.interval = setInterval(() => this.#retry(), msgCacheInterval);
+  }
+
+  // One pass down the cache, oldest first, over the entries cached when the tick began: it sends
+  // every one a live channel takes. Entries keep their places: one that cannot go out stays
+  // where it is, one that went out or was dropped leaves. A channel that fails in the pass is
+  // not tried again in it, so its later entries keep their order, and the pass reports only its
+  // first failure. The pass's events go out once the cache holds its result.
+  #retry() {
+    const cache = this.msgCache;
+    if (cache.length === 0 || this.getAllChannels().length === 0) return;
+    const pass = { failed: new Set(), reported: false };
+    const notes = [];
+    const kept = [];
+    const end = cache.length;
+    let at = 0;
+    while (at < end && !this.#stopped) {
+      const tried = cache[at++];
+      const keep = this.#attempt(tried, pass, notes);
+      for (const entry of keep) kept.push({ entry, added: entry !== tried });
+    }
+    // past `at`: any entries a stop() kept the pass from, then any a listener cached during it.
+    // Cached entries go back by index; one the pass made (an 'all' split) is added, in its place.
+    const rest = cache.slice(at);
+    cache.length = 0;
+    for (const { entry, added } of kept) {
+      if (added) this.#cache(entry);
+      else cache[cache.length] = entry;
+    }
+    for (const entry of rest) cache[cache.length] = entry;
+    this.#tell(notes);
   }
   
   async stop() {
@@ -211,46 +240,117 @@ class AMQPPool extends EventEmitter {
   }
   
 
-  // ToDo: Needs some DRYing
   publish(msg, filter, topic, props) {
     this.#assertRunning();
-    let channels = this.getAliveChannels();
+    const notes = [];
+    const keep = this.#attempt({ msg, filter, topic, props }, null, notes);
+    // with nobody listening, the 'error' throws to the caller, as it always did, and nothing is
+    // cached: a caller that publishes again then sends the message once
+    if (this.listenerCount('error') === 0 && notes.some(([event]) => event === 'error')) {
+      return this.#notify(notes);
+    }
+    for (const entry of keep) this.#cache(entry);
+    this.#notify(notes);
+  }
+
+  // Sends one message where its filter points. Returns what stays cached in its place (nothing,
+  // the entry itself, or for an 'all' publish one entry per failed channel), and adds to `notes`
+  // the events to emit once the cache holds that result. `pass` is the retry tick's, and null
+  // for a publish() call.
+  #attempt(entry, pass, notes) {
+    const { filter, props } = entry;
+    const channels = this.getAliveChannels();
     if (typeof filter == 'function') {
-      let filteredChannels = filter(channels);
-      if (!filteredChannels) this.msgCache.push({msg, filter, topic, props});
-      else {
-        if (filteredChannels instanceof Channel) filteredChannels = [filteredChannels];
-        for (let channelIndex in filteredChannels) {
-          const channel = filteredChannels[channelIndex];
-          // a closed channel takes nothing, now or on a retry: no entry is cached for it
-          if (channel?.isClosed) this.#dropForClosed(channel, props);
-          else this.#publishOn(channel, {msg, filter, topic, props}, !retryFilters.has(filter));
-        }
+      let targets;
+      try {
+        targets = filter(channels);
+      } catch (e) {
+        // publish()'s caller hears its own filter's throw. In the tick nobody would: the throw
+        // is reported, and the message dropped, as the filter would throw on every tick.
+        if (!pass) throw e;
+        const info = { message: 'cached message dropped', messageId: props?.messageId };
+        notes.push(['error', e], ['info', { ...info, reason: 'filter threw' }]);
+        return [];
       }
-    } else if (filter === 'rr') {
-      if (channels.length > 0 ) {
-        if(this.rr_i >= channels.length) {
-          this.rr_i = 0;
-        }
-        this.#publishOn(channels[this.rr_i++], {msg, filter, topic, props}, false);
-      } else {
-        this.msgCache.push({msg, filter, topic, props});
+      if (!targets) return [entry];
+      if (targets instanceof Channel) targets = [targets];
+      return this.#send(entry, targets, !retryFilters.has(filter), pass, notes);
+    }
+    if (channels.length === 0) return [entry];
+    if (filter === 'rr') {
+      if (this.rr_i >= channels.length) this.rr_i = 0;
+      return this.#send(entry, [channels[this.rr_i++]], false, pass, notes);
+    }
+    if (filter !== 'all') return this.#send(entry, [channels[0]], true, pass, notes);
+    // each channel that fails keeps an entry of its own, with a filter that reaches it only
+    const keep = [];
+    for (const channel of channels) {
+      const only = { ...entry, filter: this.#onlyChannel(channel, props) };
+      keep.push(...this.#send(only, [channel], false, pass, notes));
+    }
+    return keep;
+  }
+
+  // Publishes on each target this entry is not done with. The entry stays cached, once, while a
+  // target still owes it, and remembers the channels it is done with, which a retry skips.
+  // A closed channel takes nothing, now or on a retry: its drop is told once, and nothing waits
+  // for it. A RangeError is amqplib refusing the message itself (since 2.3.1, a headers or
+  // arguments table over 64 KiB): every retry would fail the same way, so it is reported and
+  // nothing waits for it.
+  #send(entry, targets, report, pass, notes) {
+    const done = this.#done.get(entry);
+    const doneNow = [];
+    let owed = false;
+    for (const key in targets) {
+      const channel = targets[key];
+      if (this.#stopped) {
+        owed = true;
+        break;
       }
-    } else if (filter === 'all') {
-      if (channels.length > 0) {
-        for (let channelIndex in channels) {
-          const channel = channels[channelIndex];
-          const only = this.#onlyChannel(channel, props);
-          this.#publishOn(channel, {msg, filter: only, topic, props}, false);
-        }
-      } else {
-        this.msgCache.push({msg, filter, topic, props});
+      if (done?.has(channel)) continue;
+      if (channel?.isClosed) {
+        notes.push(['info', this.#closedDrop(channel, entry.props)]);
+        doneNow.push(channel);
+        continue;
       }
-    } else { // first alive
-      if (channels.length > 0) {
-        this.#publishOn(channels[0], {msg, filter, topic, props}, true);
-      } else {
-        this.msgCache.push({msg, filter, topic, props});
+      if (pass?.failed.has(channel)) {
+        owed = true;
+        continue;
+      }
+      try {
+        channel.publish(entry.msg, entry.topic, entry.props);
+        doneNow.push(channel);
+      } catch (e) {
+        const refused = e instanceof RangeError;
+        if (refused || (report && !pass?.reported)) notes.push(['error', e]);
+        if (refused) continue;
+        owed = true;
+        if (!pass) continue;
+        pass.failed.add(channel);
+        if (report) pass.reported = true;
+      }
+    }
+    if (!owed) return [];
+    if (doneNow.length > 0) this.#done.set(entry, new Set([...(done || []), ...doneNow]));
+    return [entry];
+  }
+
+  #notify(notes) {
+    for (const [event, payload] of notes) if (!this.#stopped) this.emit(event, payload);
+  }
+
+  // The tick's events. The tick runs in a timer, where a throw would end the process, so an
+  // 'error' nobody listens to becomes a process warning, and so does a listener's throw.
+  #tell(notes) {
+    for (const [event, payload] of notes) {
+      if (this.#stopped) return;
+      if (event === 'error' && this.listenerCount('error') === 0) warn(payload);
+      for (const fn of this.rawListeners(event)) {
+        try {
+          fn.call(this, payload);
+        } catch (err) {
+          warn(err);
+        }
       }
     }
   }
@@ -273,25 +373,22 @@ class AMQPPool extends EventEmitter {
   }
 
   #dropForClosed(channel, props) {
-    this.emit('info', {
+    this.emit('info', this.#closedDrop(channel, props));
+  }
+
+  #closedDrop(channel, props) {
+    return {
       message: 'cached message dropped',
       messageId: props?.messageId,
       channelId: channel._id,
       reason: 'channel is closed'
-    });
+    };
   }
 
-  // A failed publish is cached and retried by start(). A RangeError is amqplib refusing the
-  // message itself (since 2.3.1, a headers or arguments table over 64 KiB): every retry would
-  // fail the same way, so it is reported and not cached.
-  #publishOn(channel, entry, reportError) {
-    try {
-      channel.publish(entry.msg, entry.topic, entry.props);
-    } catch (e) {
-      const refused = e instanceof RangeError;
-      if ((reportError || refused) && !this.#stopped) this.emit('error', e);
-      if (!refused) this.msgCache.push(entry);
-    }
+  // The one way into the cache: every message kept for start()'s retry is added here, and only
+  // here does the pool push onto msgCache
+  #cache(entry) {
+    this.msgCache.push(entry);
   }
 
   ack(msg) {

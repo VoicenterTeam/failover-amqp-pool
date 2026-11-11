@@ -45,14 +45,13 @@ test('start() once, then stop(): no timer is left running', async t => {
   assert.strictEqual(active.size, 0);
 });
 
-test('a restarted pool still retries a cached message, once per tick', t => {
+test('a restarted pool still retries its cache, one pass per tick', t => {
   t.mock.timers.enable({ apis: ['setInterval'] });
-  const A = fake('A');
-  const { pool } = rig(t, { alive: [A] });
+  const { pool } = rig(t, { all: [fake('A')] });
+  let passes = 0;
   pool.start(10);
   pool.start(10);
-  pool.msgCache.push({ msg: { n: 1 }, filter: undefined });
-  pool.msgCache.push({ msg: { n: 2 }, filter: undefined });
+  pool.msgCache.push({ msg: { n: 1 }, filter: () => { passes++; return null; } });
   t.mock.timers.tick(10);
-  assert.strictEqual(A.got.length, 1, 'one timer, one retry per tick');
+  assert.strictEqual(passes, 1, 'one timer, one retry pass per tick');
 });
