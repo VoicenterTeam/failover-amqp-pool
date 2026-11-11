@@ -250,7 +250,17 @@ class AMQPPool extends EventEmitter {
     const { filter, props } = entry;
     const channels = this.getAliveChannels();
     if (typeof filter == 'function') {
-      let targets = filter(channels);
+      let targets;
+      try {
+        targets = filter(channels);
+      } catch (e) {
+        // publish()'s caller hears its own filter's throw. In the tick nobody would: the throw
+        // is reported, and the message dropped, as the filter would throw on every tick.
+        if (!pass) throw e;
+        const info = { message: 'cached message dropped', messageId: props?.messageId };
+        notes.push(['error', e], ['info', { ...info, reason: 'filter threw' }]);
+        return { keep: [], sent: false };
+      }
       if (!targets) return { keep: [entry], sent: false };
       if (targets instanceof Channel) targets = [targets];
       return this.#send(entry, targets, !retryFilters.has(filter), pass, notes);
