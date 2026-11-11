@@ -5,7 +5,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
-const { own } = require('./helpers/own');
+const { own, acquireOwned } = require('./helpers/own');
 
 const FIXTURE = path.join(__dirname, 'helpers', 'late-handle-fixture.js');
 
@@ -56,6 +56,40 @@ test('own() checks its arguments and names the bad one', async () => {
     ['release not a function', [{ after() {} }, 'x'], /^TypeError: own\(t, release\): release /],
   ];
   for (const [name, args, message] of rows) await assert.rejects(own(...args), message, name);
+});
+
+// PR #97 review: a PUT can fail at the client after the broker made the thing it names
+test('acquireOwned() releases what an acquire that rejects may have made', async t => {
+  let released = 0;
+  await t.test('row', async t2 => {
+    const put = () => Promise.reject(new Error('PUT aborted'));
+    await assert.rejects(acquireOwned(t2, put, () => { released++; }), /PUT aborted/);
+  });
+  assert.strictEqual(released, 1);
+});
+
+test('acquireOwned() returns what the acquire gave, and releases it after the test', async t => {
+  let released = 0;
+  await t.test('row', async t2 => {
+    assert.strictEqual(await acquireOwned(t2, async () => 'made', () => { released++; }), 'made');
+    assert.strictEqual(released, 0);
+  });
+  assert.strictEqual(released, 1);
+});
+
+test('acquireOwned() whose acquire lands after the test ended releases at once', async () => {
+  const controller = new AbortController();
+  const scope = { after() {}, signal: controller.signal };
+  let released = 0;
+  const acquire = async () => { controller.abort(); return 'late'; };
+  await assert.rejects(acquireOwned(scope, acquire, () => { released++; }),
+    { message: 'the test has ended; released a handle it acquired late' });
+  assert.strictEqual(released, 1);
+});
+
+test('acquireOwned() checks its acquire and names it', async () => {
+  await assert.rejects(acquireOwned({ after() {} }, 'x', () => {}),
+    /^TypeError: acquireOwned\(t, acquire, release\): acquire /);
 });
 
 // The file-level shape of #93: a row times out, then opens a handle that keeps the loop alive.

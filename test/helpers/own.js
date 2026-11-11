@@ -14,6 +14,8 @@ async function releaseAll(stack) {
   if (failed) throw failed.e;
 }
 
+const ENDED = 'the test has ended; released a handle it acquired late';
+
 async function own(t, release) {
   if (typeof t?.after !== 'function') {
     throw new TypeError('own(t, release): t must be a test context with after()');
@@ -31,7 +33,23 @@ async function own(t, release) {
     return;
   }
   await release();
-  throw new Error('the test has ended; released a handle it acquired late');
+  throw new Error(ENDED);
 }
 
-module.exports = { own };
+// For a thing the broker makes by name (a vhost, a user, a queue): `release` is owned before
+// `acquire` runs, so an acquire that rejects after the broker acted is still undone, and it is
+// run again at once when the acquire lands after the test ended (PR #97 review).
+async function acquireOwned(t, acquire, release) {
+  if (typeof acquire !== 'function') {
+    throw new TypeError('acquireOwned(t, acquire, release): acquire must be a function');
+  }
+  await own(t, release);
+  const got = await acquire();
+  if (t.signal?.aborted) {
+    await release();
+    throw new Error(ENDED);
+  }
+  return got;
+}
+
+module.exports = { own, acquireOwned };
