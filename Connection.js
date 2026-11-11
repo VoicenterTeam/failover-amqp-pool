@@ -73,15 +73,25 @@ class Connection extends EventEmitter {
           });
           this.amqpConnection.on('error', (error) => {
             countConnectionError(this.url, error);
+            // A numeric code is the broker's ConnectionClose (amqplib sets it there only): the
+            // close fails every create in flight, and it is reported once, here. A socket error
+            // or heartbeat timeout has none, and the creates report as before.
+            if (typeof error?.code === 'number') {
+              for (const channel of this.channels) channel._connectionRefused?.(error);
+            }
             this.emit('error', { error: error , url: this.safeUrl})
           });
           this.alive = true;
           this.emit('info', {message: 'Connection created', url: this.safeUrl});
           this.connection()
-        })
-        .then(() => {
-          //this.emit('connection', this);
-          //console.log('Ok');
+          // once per connect, reconnects included; the URL without username or password. A
+          // listener's throw is reported, and must not reach the catch below, which would
+          // connect again beside this live connection.
+          try {
+            this.emit('connection', this.safeUrl);
+          } catch (error) {
+            this.emit('error', { error: error , url: this.safeUrl})
+          }
         })
         .catch((error) => {
           this.alive = false;
