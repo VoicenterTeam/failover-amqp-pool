@@ -18,6 +18,7 @@ class Channel extends EventEmitter {
   #isAlive= false;
   #isConnecting = false;
   #closed = false;
+  #checking = null;   // the amqplib channel a create is passively checking a queue on
   #readyEmitted = false;
   #consumingOn = null;
   #retryTimer = null;
@@ -174,6 +175,12 @@ class Channel extends EventEmitter {
           this.amqpChannel.on('error', (err) => {
             if (amqpChannel !== this.amqpChannel) return;
             this.alive = false;
+            // the 404 the create's own checkQueue draws for a missing queue: the create declares
+            // it next, so it is not an error. Any other 404 on this channel still is.
+            if (err?.code === 404 && this.#checking === amqpChannel) {
+              this.emit('info', {message: 'queue not found, declaring it', queue: this.queue?.name, channelId: this._id});
+              return;
+            }
             this.emit('error', err);
           });
 
@@ -271,7 +278,11 @@ class Channel extends EventEmitter {
         });
   }
   #createQueue(queue, options){
-      return this.amqpChannel.checkQueue(queue).then(assertion => {
+      // the amqplib channel whose passive check is in flight: its 404 is the expected answer
+      const checked = this.#checking = this.amqpChannel;
+      return checked.checkQueue(queue).finally(() => {
+        if (this.#checking === checked) this.#checking = null;
+      }).then(assertion => {
           if(assertion.queue){
             this.queue.name = assertion.queue;
             return true;

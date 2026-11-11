@@ -62,6 +62,10 @@ Migrating:
   answers `405 RESOURCE_LOCKED`, the create fails with `'cant establish a channel'` and is retried
   until the broker drops the old connection. Set `queue.options.exclusive: false` to keep a
   dynamic queue across connections; on 4.3 it needs `durable: true` as well.
+- **A missing queue is not an `'error'`.** The check that finds no queue (`404 NOT_FOUND`) before
+  the pool declares it, on a reconnect of a dynamic queue or the first declare of a named one, is
+  an `'info'` event `{ message: 'queue not found, declaring it', queue, channelId }`. Any other
+  404 (a publish to a deleted queue, a refused bind) is still an `'error'`.
 - **A dynamic quorum or stream queue** cannot be exclusive or transient (the broker refuses it
   with 406), so a dynamic queue whose `arguments` set `x-queue-type` to `'quorum'` or `'stream'`
   defaults to `exclusive: false, durable: true`, as a named queue does. An explicit
