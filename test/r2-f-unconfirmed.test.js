@@ -6,11 +6,15 @@ const assert = require('node:assert');
 const Channel = require('../Channel');
 const { FakeAmqpChannel } = require('./helpers/fakes');
 
-// a fake that keeps amqplib's confirm callbacks, in publish order
+// a fake that keeps amqplib's confirm callbacks, in publish order. Like amqplib 2.3.1's channel
+// constructor, it fails every pending callback on 'close', from a listener added first.
 class ConfirmingChannel extends FakeAmqpChannel {
   constructor() {
     super();
     this.confirms = [];
+    this.on('close', () => {
+      for (const cb of this.confirms) if (cb) cb(new Error('channel closed'));
+    });
   }
   publish(exchange, routingKey, content, options, cb) {
     super.publish(exchange, routingKey, content, options);
