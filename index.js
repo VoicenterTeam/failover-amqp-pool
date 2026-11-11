@@ -229,7 +229,7 @@ class AMQPPool extends EventEmitter {
       if (channels.length > 0) {
         for (let channelIndex in channels) {
           const channel = channels[channelIndex];
-          const only = this.#onlyChannel(channel);
+          const only = this.#onlyChannel(channel, props);
           this.#publishOn(channel, {msg, filter: only, topic, props}, false);
         }
       } else {
@@ -249,13 +249,14 @@ class AMQPPool extends EventEmitter {
   // publish() caches again. Once it is removed from the pool, [], which is truthy and drops the
   // entry: no retry could ever reach it. A channel closed with close() but still listed is as
   // final: the entry is dropped, with one 'info'.
-  #onlyChannel(channel) {
+  #onlyChannel(channel, props) {
     const filter = alive => {
       if (alive.includes(channel)) return [channel];
       if (!this.getAllChannels().includes(channel)) return [];
       if (!channel.isClosed) return null;
       this.emit('info', {
         message: 'cached message dropped',
+        messageId: props?.messageId,
         channelId: channel._id,
         reason: 'channel is closed'
       });
