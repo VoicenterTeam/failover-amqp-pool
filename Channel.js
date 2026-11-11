@@ -419,10 +419,12 @@ class Channel extends EventEmitter {
         this.emit('info', {message: `consume started on queue: ${queue}`})
         this.amqpChannel.consume(this.queue.name, (m) => {
           if (m == null) {
+            // a replaced channel's late cancel: the current channel is not its to close
+            if (amqpChannel !== this.amqpChannel) return;
             // the broker cancelled the consumer: close what is left of the channel and re-create
             // it. A close() that rejects or throws means it is already closed, which is the aim.
-            try { Promise.resolve(this.amqpChannel.close()).catch(() => {}); } catch (e) {}
-            this.create();
+            try { Promise.resolve(amqpChannel.close()).catch(() => {}); } catch (e) {}
+            if (!this.#isConnecting) this.create();
             this.emit('error', {
               message: 'Message is null', channelId: this._id,
               queue: this.queue?.name, exchange: this.exchange?.name
