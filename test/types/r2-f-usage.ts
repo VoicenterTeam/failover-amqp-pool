@@ -1,5 +1,5 @@
 // #79's types: 'unconfirmed' on the pool and on a Channel, its entries, waitConfirmed(),
-// and resend(). test/r2-f-types.test.js compiles this file.
+// resend() and stop()'s confirmTimeout. test/r2-f-types.test.js compiles this file.
 import AMQPPool = require('../..');
 
 declare const pool: AMQPPool;
@@ -23,4 +23,6 @@ channel.on('unconfirmed', (entries: AMQPPool.UnconfirmedEntry[]) => {
 async function shutdown(): Promise<void> {
     const left: AMQPPool.UnconfirmedEntry[] = await channel.waitConfirmed(1000);
     const tries: number[] = left.map(entry => entry.attempts);
+    const closed: number[] = await pool.stop({ confirmTimeout: 2000 });
+    await pool.stop();
 }

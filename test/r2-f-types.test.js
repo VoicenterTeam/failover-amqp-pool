@@ -22,7 +22,7 @@ const compile = file => {
   return { status: result.status, out: result.stdout + result.stderr };
 };
 
-test('types #79: unconfirmed entries, waitConfirmed and resend compile', { skip },
+test('types #79: unconfirmed entries, waitConfirmed, resend and stop options compile', { skip },
   () => {
     const { status, out } = compile('r2-f-usage.ts');
     assert.strictEqual(status, 0, out);
@@ -39,6 +39,6 @@ test('types #79: each r2-f-negative.ts misuse raises its tagged error only', { s
   const { out } = compile('r2-f-negative.ts');
   const got = [...out.matchAll(/r2-f-negative\.ts\((\d+),\d+\): error (TS\d+)/g)]
     .map(m => `${m[1]} ${m[2]}`);
-  assert.strictEqual(expected.length, 3);
+  assert.strictEqual(expected.length, 5);
   assert.deepStrictEqual(got, expected, out);
 });

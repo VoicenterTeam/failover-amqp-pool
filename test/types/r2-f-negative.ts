@@ -5,6 +5,8 @@ import AMQPPool = require('../..');
 declare const pool: AMQPPool;
 declare const channel: AMQPPool.Channel;
 
+pool.stop({ confirmTimeout: '5s' }); // TS2322 milliseconds, a number
+pool.stop({ timeout: 10 }); // TS2353 the option is confirmTimeout
 channel.waitConfirmed('1000'); // TS2345 milliseconds, a number
 channel.resend({ msg: 'x' }); // TS2345 a handed-back entry, with its method
 pool.on('unconfirmed', (entry: AMQPPool.UnconfirmedEntry) => {}); // TS2769 an array of entries

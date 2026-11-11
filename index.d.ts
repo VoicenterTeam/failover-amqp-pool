@@ -24,16 +24,21 @@ declare class AMQPPool extends EventEmitter {
      */
     start(msgCacheInterval?: number): void;
     /**
-     * Stops the retry timer, removes the pool's SIGINT listener and the listeners it added to
-     * its connections and channels, and closes every connection. The app's own listeners
-     * ('info', 'error' and any other) stay, and a stopped pool emits nothing more, so a
-     * teardown error is not heard. (A SIGINT stop gives those listeners its one 'info' or
+     * Stops the retry timer and removes the pool's SIGINT listener. Then it waits up to
+     * `confirmTimeout` ms (default 5000) for the broker to confirm what the channels hold, and
+     * reports what is still unconfirmed once: one 'unconfirmed' event with every entry, and one
+     * 'info' { message: 'unconfirmed messages at stop', count }. Then it removes the listeners
+     * it added to its connections and channels, and closes every connection. The app's own
+     * listeners ('info', 'error' and any other) stay, and a stopped pool emits nothing more, so
+     * a teardown error is not heard. (A SIGINT stop gives those listeners its one 'info' or
      * 'error'.) Takes no callback. Resolves, once each connection is closed and removed, with
-     * one entry per connection: its position when stop() began.
+     * one entry per connection: its position when stop() began. Rejects with a TypeError,
+     * before anything stops, for a confirmTimeout that is not a whole number from 0 to
+     * 2147483647.
      * A stopped pool is final: addConnection(), createConnection(), createChannel(), start() and
      * publish() throw a {@link AMQPPool.PoolStoppedError} after it.
      */
-    stop(): Promise<number[]>;
+    stop(options?: AMQPPool.StopOptions): Promise<number[]>;
     /**
      * Adds the connections and channels of a config array; returns the new channels' ids.
      * @throws {AMQPPool.PoolStoppedError} after stop().
@@ -145,6 +150,11 @@ declare namespace AMQPPool {
     type PoolEvent =
         'ready' | 'recreated' | 'close' | 'connection' | 'channelMessage' | 'error' | 'info' |
         'unconfirmed';
+
+    interface StopOptions {
+        /** How long stop() waits for confirms, ms. Default 5000. */
+        confirmTimeout?: number;
+    }
 
     /** The channel's own error a 'closed' entry carries: 404 or 406, say. */
     interface UnconfirmedCause {
