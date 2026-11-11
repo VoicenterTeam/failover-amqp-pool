@@ -140,6 +140,8 @@ class AMQPPool extends EventEmitter {
   }
   start(msgCacheInterval = 2000) {
     this.#assertRunning();
+    // stop() clears only the last timer, so a restart replaces the one running
+    clearInterval(this.interval);
     this.interval = setInterval(() => {
       // a timer of an earlier start() outlives stop(), which clears only the last one
       if (this.#stopped) return;
