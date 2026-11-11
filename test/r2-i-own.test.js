@@ -87,6 +87,17 @@ test('acquireOwned() whose acquire lands after the test ended releases at once',
   assert.strictEqual(released, 1);
 });
 
+// PR #97 re-review: the row timed out while its PUT was pending, then the PUT rejected after the
+// broker acted. The after hook released too early; the release must run once more.
+test('acquireOwned() whose acquire rejects after the test aborted releases at once', async () => {
+  const controller = new AbortController();
+  const scope = { after() {}, signal: controller.signal };
+  let released = 0;
+  const acquire = async () => { controller.abort(); throw new Error('PUT aborted'); };
+  await assert.rejects(acquireOwned(scope, acquire, () => { released++; }), /PUT aborted/);
+  assert.strictEqual(released, 1);
+});
+
 test('acquireOwned() checks its acquire and names it', async () => {
   await assert.rejects(acquireOwned({ after() {} }, 'x', () => {}),
     /^TypeError: acquireOwned\(t, acquire, release\): acquire /);
