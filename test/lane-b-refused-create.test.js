@@ -138,6 +138,28 @@ test('#74 the create after a refused one reports its own failure again', async t
   assert.strictEqual(own.e.err.code, 403);
 });
 
+test('#74 an idle channel at the refusal still reports its next failed create', async t => {
+  // connection 0: 'idle' is created, then 'refused' is refused by a connection close; on
+  // connection 1 the declare of 'idle' is refused at channel level (403)
+  fakeBroker(t, (conn, c, q, n) => {
+    if (n === 0 && q === 'refused') return pending(conn, () => closeAll(conn, refusal()));
+    if (n === 0 || q !== 'idle') { c.queues.add(q); return Promise.resolve({ queue: q }); }
+    const e = Object.assign(new Error('403 (ACCESS-REFUSED)'), { code: 403 });
+    c.emit('error', e);
+    return Promise.reject(e);
+  });
+  const { conn, errors } = wire(t, ['idle', 'refused'], 1);
+  const failed = [];   // the error each failed create of 'idle' names
+  conn.channels[0].on('info', i => {
+    if (i?.message === 'channel create failed') failed.push(i.error);
+  });
+  conn.start();
+  await waitFor(() => errors.some(x => x.from === 'idle'), 'the idle channel\'s error');
+  // its first failed create is its own 403, reported: not silenced as the earlier refusal's
+  assert.strictEqual(failed[0], '403 (ACCESS-REFUSED)');
+  assert.strictEqual(errors.find(x => x.from === 'idle').e.err.code, 403);
+});
+
 test('#74 a connection error with no create in flight still reaches error', async t => {
   const made = fakeBroker(t, (conn, c, q) => {
     c.queues.add(q);
