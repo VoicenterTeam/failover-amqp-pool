@@ -281,11 +281,13 @@ async function mgmt(method, path, body) {
   return method === 'GET' ? res.json() : undefined;
 }
 
-// a pool for one user that records every event; returns the recorded events and helpers
-async function credentialPool(t, username, password) {
+// a pool for one user that records every event; returns the recorded events and helpers.
+// The user's DELETE hook registers as soon as the user exists, before a step that can throw.
+async function credentialPool(t, username, password, vhost = '/') {
   await mgmt('PUT', `users/${encodeURIComponent(username)}`, { password, tags: '' });
-  await mgmt('PUT', `permissions/%2F/${encodeURIComponent(username)}`, { configure: '.*', write: '.*', read: '.*' });
   t.after(() => mgmt('DELETE', `users/${encodeURIComponent(username)}`));
+  const grant = `permissions/${encodeURIComponent(vhost)}/${encodeURIComponent(username)}`;
+  await mgmt('PUT', grant, { configure: '.*', write: '.*', read: '.*' });
   const u = new URL(URL_);
   const pool = new AMQPPool([{
     connection: { host: u.hostname, port: Number(u.port), username, password, ssl: false, reconnectInterval: 50 },
@@ -330,6 +332,21 @@ test('issue #9: a non-ASCII password is refused (amqplib limit) and is not emitt
   await until(() => events.some(([n, [a]]) => n === 'error' && /ACCESS_REFUSED|PLAIN login refused/i.test(String(a?.error?.message))));
   assertNoSecret();
 });
+
+// #60: a permissions PUT that fails (here on a vhost that does not exist) leaves no user
+test('#60 a failing permissions PUT in credentialPool leaves no user on the broker',
+  { skip: skipMgmt }, async t => {
+    const username = `famqp-i60-${process.pid}-${Date.now()}`;
+    const user = `users/${encodeURIComponent(username)}`;
+    t.after(() => mgmt('DELETE', user));   // only if this row fails before the hooks below run
+    const hooks = [];
+    const scope = { after: hook => hooks.push(hook) };
+    const missing = `famqp-i60-missing-${process.pid}`;
+    const made = credentialPool(scope, username, 'pw', missing);
+    await assert.rejects(made, /^Error: PUT permissions/);
+    for (const hook of hooks.reverse()) await hook();
+    await assert.rejects(mgmt('GET', user), { message: `GET ${user}: 404` });
+  });
 
 // issue #9 review: vhost names with URL syntax characters reach the right vhost
 test('issue #9: vhosts with URL syntax characters, and the default vhost, connect', { skip: skipMgmt, timeout: 60000 }, async t => {
