@@ -6,6 +6,7 @@ const os = require('node:os');
 const Channel = require('../Channel');
 const { FakeAmqpChannel } = require('./helpers/fakes');
 const { MGMT, mgmt, until, queuePath, connectionNamed, closeConnection } = require('./helpers/mgmt');
+const { own } = require('./helpers/own');
 
 // like amqplib: a refused passive check closes the channel, which emits 'error' (code 404)
 // before the pending promise's handlers run
@@ -163,7 +164,9 @@ async function livePool(t, channelConf) {
   const u = new URL(URL_);
   const exchange = unique('x');
   const connection_name = unique('conn');
+  // each handle is owned as it is acquired; a row that timed out releases it at once (#93)
   const admin = await amqplib.connect(URL_);
+  await own(t, () => admin.close().catch(() => {}));
   const adminCh = await admin.createChannel();
   adminCh.on('error', () => {});
   const queues = [];
@@ -175,7 +178,7 @@ async function livePool(t, channelConf) {
   }]);
   const errors = [];
   pool.on('error', e => errors.push(e));
-  t.after(async () => {
+  await own(t, async () => {
     const stopped = pool.stop();
     pool.on('error', () => {});
     await stopped.catch(() => {});
@@ -191,7 +194,6 @@ async function livePool(t, channelConf) {
     };
     for (const q of queues) await drop('deleteQueue', q);
     await drop('deleteExchange', exchange);
-    await admin.close().catch(() => {});
   });
   return { pool, adminCh, exchange, errors, queues, connectionName: `${connection_name}_${os.hostname}` };
 }
