@@ -40,7 +40,8 @@ declare class AMQPPool extends EventEmitter {
      * channel the message is cached. A publish that fails on a channel is cached too, and an
      * 'error' is emitted. A cached 'all' message is retried on the channel that failed only; if
      * that channel is gone (removed, or closed with close() and still listed) it is dropped, a
-     * closed one with an 'info' event { message: 'cached message dropped', channelId, reason }.
+     * closed one with an 'info' event
+     * { message: 'cached message dropped', messageId, channelId, reason }.
      * Throws Error('Pool is stopped') after stop().
      */
     publish(

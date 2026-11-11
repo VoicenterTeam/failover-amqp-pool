@@ -6,11 +6,11 @@ const assert = require('node:assert');
 const { fake, rig } = require('./helpers/stubpool');
 
 // B fails once under 'all', so its entry is cached with the retry filter; start() retries it
-function cachedForB(t, B) {
+function cachedForB(t, B, props) {
   t.mock.timers.enable({ apis: ['setInterval'] });
   const A = fake('A');
   const env = rig(t, { alive: [A, B], all: [A, B] });
-  env.pool.publish({ n: 1 }, 'all');
+  env.pool.publish({ n: 1 }, 'all', undefined, props);
   assert.strictEqual(env.pool.msgCache.length, 1);
   env.setAlive([A]);
   env.pool.start(10);
@@ -30,6 +30,17 @@ test('start() retry: an entry aimed only at a closed, listed channel is dropped 
     t.mock.timers.tick(30);
     assert.strictEqual(heard.info.length, 1, 'dropped once, not per tick');
   });
+
+test('the drop info carries the message\'s messageId, as \'stale ack dropped\' does', t => {
+  const B = fake('B', { failures: 1 });
+  const { heard } = cachedForB(t, B, { messageId: 'm-1' });
+  B.isClosed = true;
+  t.mock.timers.tick(10);
+  assert.deepStrictEqual(heard.info, [{
+    message: 'cached message dropped', messageId: 'm-1', channelId: 'B',
+    reason: 'channel is closed'
+  }]);
+});
 
 test('a closed channel\'s entry reaches no other channel', t => {
   const B = fake('B', { failures: 1 });
