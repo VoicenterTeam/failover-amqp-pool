@@ -178,6 +178,21 @@ test('#90 a Connecting listener throwing on the retry: the reconnect happens', a
   assert.strictEqual(conn.alive, true);
 });
 
+// ---- the connection's 'error' after connect: with no listener, or a throwing one, it warns
+
+const afterRows = [
+  ['no error listener', () => {}, [['ERR_UNHANDLED_ERROR', 'socket gone']]],
+  ['the error listener throws', conn => conn.on('error', boom('error bug')), [['error bug']]],
+];
+for (const [name, wire, warned] of afterRows) {
+  test(`#90 connection error after connect, ${name}: warned, not thrown`, async t => {
+    const r = await run(t, wire);
+    assert.doesNotThrow(() => r.made[0].emit('error', new Error('socket gone')));
+    await turns(1);
+    assert.deepStrictEqual(r.warnings.map(fields), warned);
+  });
+}
+
 // ---- live broker
 
 const URL_ = process.env.FAMQP_TEST_URL;

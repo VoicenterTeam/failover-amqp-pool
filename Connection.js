@@ -101,7 +101,8 @@ class Connection extends EventEmitter {
             if (typeof error?.code === 'number') {
               for (const channel of this.channels) channel._connectionRefused?.(error);
             }
-            this.emit('error', { error: error , url: this.safeUrl})
+            // with no listener, or a throwing one, a warning: the close that follows reconnects
+            this.#report('error', { error: error , url: this.safeUrl})
           });
           this.alive = true;
           this.#report('info', {message: 'Connection created', url: this.safeUrl});
