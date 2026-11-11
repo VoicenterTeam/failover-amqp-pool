@@ -255,16 +255,20 @@ class AMQPPool extends EventEmitter {
       if (alive.includes(channel)) return [channel];
       if (!this.getAllChannels().includes(channel)) return [];
       if (!channel.isClosed) return null;
-      this.emit('info', {
-        message: 'cached message dropped',
-        messageId: props?.messageId,
-        channelId: channel._id,
-        reason: 'channel is closed'
-      });
+      this.#dropForClosed(channel, props);
       return [];
     };
     retryFilters.add(filter);
     return filter;
+  }
+
+  #dropForClosed(channel, props) {
+    this.emit('info', {
+      message: 'cached message dropped',
+      messageId: props?.messageId,
+      channelId: channel._id,
+      reason: 'channel is closed'
+    });
   }
 
   // A failed publish is cached and retried by start(). A RangeError is amqplib refusing the
