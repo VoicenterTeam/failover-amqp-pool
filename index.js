@@ -74,10 +74,18 @@ class AMQPPool extends EventEmitter {
   #onSigint = async () => {
     // emitWarning throws on a value that is neither a string nor an Error, and String() throws
     // on an object with no prototype or a toString that throws
-    // (instanceof runs a Proxy's getPrototypeOf trap, and emitWarning reads an Error's name)
+    // (instanceof runs a Proxy's getPrototypeOf trap, and emitWarning reads an Error's name).
+    // Node prints an Error's warning a tick later, outside this try, reading its code, detail,
+    // stack and toString: it gets a copy made of strings read here instead.
     const warn = (value) => {
       try {
-        process.emitWarning(value instanceof Error ? value : String(value));
+        if (!(value instanceof Error)) return process.emitWarning(String(value));
+        const copy = new Error(String(value.message));
+        copy.name = String(value.name);
+        const { code, stack } = value;
+        if (code) copy.code = String(code);
+        if (typeof stack === 'string') copy.stack = stack;
+        process.emitWarning(copy);
       } catch {
         process.emitWarning('unprintable value');
       }
