@@ -111,6 +111,8 @@ class AMQPPool extends EventEmitter {
   // Listeners the pool put on its Connections and Channels, per emitter: what stop() takes off
   #wired = new WeakMap();
   #stopped = false;
+  // Per cached entry, the channels it is done with: they took its message, or are closed
+  #done = new WeakMap();
 
   // A stopped pool is final: it opens, creates and sends nothing. The code lets a caller match
   // the error without its text.
@@ -151,12 +153,33 @@ class AMQPPool extends EventEmitter {
     this.#assertRunning();
     // stop() clears only the last timer, so a restart replaces the one running
     clearInterval(this.interval);
-    this.interval = setInterval(() => {
-      if (this.msgCache.length > 0 && this.getAllChannels().length > 0) {
-        let m = this.msgCache.shift();
-        this.publish(m.msg, m.filter, m.topic, m.props);
-      }
-    }, msgCacheInterval);
+    this.interval = setInterval(() => this.#retry(), msgCacheInterval);
+  }
+
+  // One pass down the cache, oldest first. Entries keep their places: one that cannot go out
+  // stays where it is, one that went out or was dropped leaves. The pass ends after the first
+  // entry a channel took, so a tick delivers one cached message. A channel that fails in the
+  // pass is not tried again in it, so its later entries keep their order, and the pass reports
+  // only its first failure. The pass's events go out once the cache holds its result.
+  #retry() {
+    const cache = this.msgCache;
+    if (cache.length === 0 || this.getAllChannels().length === 0) return;
+    const pass = { failed: new Set(), reported: false };
+    const notes = [];
+    const kept = [];
+    const end = cache.length;
+    let at = 0;
+    while (at < end && !this.#stopped) {
+      const { keep, sent } = this.#attempt(cache[at++], pass, notes);
+      kept.push(...keep);
+      if (sent) break;
+    }
+    // past `at`: the entries the pass did not reach, then any a listener cached during it
+    const rest = cache.slice(at);
+    cache.length = 0;
+    for (const entry of kept) cache.push(entry);
+    for (const entry of rest) cache.push(entry);
+    this.#notify(notes);
   }
   
   async stop() {
@@ -211,48 +234,93 @@ class AMQPPool extends EventEmitter {
   }
   
 
-  // ToDo: Needs some DRYing
   publish(msg, filter, topic, props) {
     this.#assertRunning();
-    let channels = this.getAliveChannels();
+    const notes = [];
+    const { keep } = this.#attempt({ msg, filter, topic, props }, null, notes);
+    for (const entry of keep) this.#cache(entry);
+    this.#notify(notes);
+  }
+
+  // Sends one message where its filter points. Returns what stays cached in its place (nothing,
+  // the entry itself, or for an 'all' publish one entry per failed channel), whether a channel
+  // took it, and adds to `notes` the events to emit once the cache holds that result. `pass` is
+  // the retry tick's, and null for a publish() call.
+  #attempt(entry, pass, notes) {
+    const { filter, props } = entry;
+    const channels = this.getAliveChannels();
     if (typeof filter == 'function') {
-      let filteredChannels = filter(channels);
-      if (!filteredChannels) this.#cache({msg, filter, topic, props});
-      else {
-        if (filteredChannels instanceof Channel) filteredChannels = [filteredChannels];
-        for (let channelIndex in filteredChannels) {
-          const channel = filteredChannels[channelIndex];
-          // a closed channel takes nothing, now or on a retry: no entry is cached for it
-          if (channel?.isClosed) this.#dropForClosed(channel, props);
-          else this.#publishOn(channel, {msg, filter, topic, props}, !retryFilters.has(filter));
-        }
+      let targets = filter(channels);
+      if (!targets) return { keep: [entry], sent: false };
+      if (targets instanceof Channel) targets = [targets];
+      return this.#send(entry, targets, !retryFilters.has(filter), pass, notes);
+    }
+    if (channels.length === 0) return { keep: [entry], sent: false };
+    if (filter === 'rr') {
+      if (this.rr_i >= channels.length) this.rr_i = 0;
+      return this.#send(entry, [channels[this.rr_i++]], false, pass, notes);
+    }
+    if (filter !== 'all') return this.#send(entry, [channels[0]], true, pass, notes);
+    // each channel that fails keeps an entry of its own, with a filter that reaches it only
+    const keep = [];
+    let sent = false;
+    for (const channel of channels) {
+      const only = { ...entry, filter: this.#onlyChannel(channel, props) };
+      const result = this.#send(only, [channel], false, pass, notes);
+      keep.push(...result.keep);
+      sent ||= result.sent;
+    }
+    return { keep, sent };
+  }
+
+  // Publishes on each target this entry is not done with. The entry stays cached, once, while a
+  // target still owes it, and remembers the channels it is done with, which a retry skips.
+  // A closed channel takes nothing, now or on a retry: its drop is told once, and nothing waits
+  // for it. A RangeError is amqplib refusing the message itself (since 2.3.1, a headers or
+  // arguments table over 64 KiB): every retry would fail the same way, so it is reported and
+  // nothing waits for it.
+  #send(entry, targets, report, pass, notes) {
+    const done = this.#done.get(entry);
+    const doneNow = [];
+    let sent = false;
+    let owed = false;
+    for (const key in targets) {
+      const channel = targets[key];
+      if (this.#stopped) {
+        owed = true;
+        break;
       }
-    } else if (filter === 'rr') {
-      if (channels.length > 0 ) {
-        if(this.rr_i >= channels.length) {
-          this.rr_i = 0;
-        }
-        this.#publishOn(channels[this.rr_i++], {msg, filter, topic, props}, false);
-      } else {
-        this.#cache({msg, filter, topic, props});
+      if (done?.has(channel)) continue;
+      if (channel?.isClosed) {
+        notes.push(['info', this.#closedDrop(channel, entry.props)]);
+        doneNow.push(channel);
+        continue;
       }
-    } else if (filter === 'all') {
-      if (channels.length > 0) {
-        for (let channelIndex in channels) {
-          const channel = channels[channelIndex];
-          const only = this.#onlyChannel(channel, props);
-          this.#publishOn(channel, {msg, filter: only, topic, props}, false);
-        }
-      } else {
-        this.#cache({msg, filter, topic, props});
+      if (pass?.failed.has(channel)) {
+        owed = true;
+        continue;
       }
-    } else { // first alive
-      if (channels.length > 0) {
-        this.#publishOn(channels[0], {msg, filter, topic, props}, true);
-      } else {
-        this.#cache({msg, filter, topic, props});
+      try {
+        channel.publish(entry.msg, entry.topic, entry.props);
+        doneNow.push(channel);
+        sent = true;
+      } catch (e) {
+        const refused = e instanceof RangeError;
+        if (refused || (report && !pass?.reported)) notes.push(['error', e]);
+        if (refused) continue;
+        owed = true;
+        if (!pass) continue;
+        pass.failed.add(channel);
+        if (report) pass.reported = true;
       }
     }
+    if (!owed) return { keep: [], sent };
+    if (doneNow.length > 0) this.#done.set(entry, new Set([...(done || []), ...doneNow]));
+    return { keep: [entry], sent };
+  }
+
+  #notify(notes) {
+    for (const [event, payload] of notes) if (!this.#stopped) this.emit(event, payload);
   }
 
   // The filter a failed 'all' publish is cached with: the Channel object itself (an _id changes
@@ -288,19 +356,6 @@ class AMQPPool extends EventEmitter {
   // The one way into the cache: every message kept for start()'s retry is added here
   #cache(entry) {
     this.msgCache.push(entry);
-  }
-
-  // A failed publish is cached and retried by start(). A RangeError is amqplib refusing the
-  // message itself (since 2.3.1, a headers or arguments table over 64 KiB): every retry would
-  // fail the same way, so it is reported and not cached.
-  #publishOn(channel, entry, reportError) {
-    try {
-      channel.publish(entry.msg, entry.topic, entry.props);
-    } catch (e) {
-      const refused = e instanceof RangeError;
-      if ((reportError || refused) && !this.#stopped) this.emit('error', e);
-      if (!refused) this.#cache(entry);
-    }
   }
 
   ack(msg) {
