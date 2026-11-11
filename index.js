@@ -156,6 +156,13 @@ class AMQPPool extends EventEmitter {
     })));
   }
 
+  // Re-emits each of an emitter's events on the pool
+  #forward(emitter, events) {
+    for (const [event, convert] of events) {
+      emitter.on(event, (arg) => this.emit(event, convert ? convert(arg) : arg));
+    }
+  }
+
   addConnection(rawConfig) {
     let channelIds = []
     let config = _parsConfig(rawConfig);
@@ -342,15 +349,12 @@ class AMQPPool extends EventEmitter {
 
   createConnection(url, connectionConfig){
     let connection = new Connection(url, connectionConfig);
-    connection.on('close', () => {
-      this.emit('close', connection.safeUrl)
-    });
-    connection.on('error', (error) => {
-      
-      this.emit('error', error)
-    })
-    connection.on('info', (info) => this.emit('info', info))
-    connection.on('connection', () => this.emit('connection', connection.safeUrl))
+    this.#forward(connection, [
+      ['close', () => connection.safeUrl],
+      ['error'],
+      ['info'],
+      ['connection', () => connection.safeUrl]
+    ]);
     connection.start();
 
     return this.connections.push(connection) - 1;
@@ -359,14 +363,9 @@ class AMQPPool extends EventEmitter {
   createChannel(connectionIndex, Channelconfig) {
     const connection = this.connections[connectionIndex]
     let channel = new Channel(connection, Channelconfig);
-    channel.on('ready', (channel) => this.emit('ready', channel));
-    channel.on('recreated', (channel) => this.emit('recreated', channel));
-    channel.on('close', (close) => this.emit('close', close));
-    channel.on('error', (error) => this.emit('error', error));
-    channel.on('channelMessage', (msg) => {
-      this.emit('channelMessage', msg)
-    });
-    channel.on('info', (msg) => this.emit('info', msg));
+    this.#forward(channel, [
+      ['ready'], ['recreated'], ['close'], ['error'], ['channelMessage'], ['info']
+    ]);
     connection.addChannel(channel);
     if(connection.alive)
     channel.create();
