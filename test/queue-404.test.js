@@ -105,7 +105,8 @@ test('one create holding the expected 404 and a refused bind: only the bind is a
   await settle();
   assert.ok(errors.length >= 1, 'the refused bind reached error');
   assert.ok(errors.every(e => e?.message !== 'queue not found, declaring it'));
-  assert.strictEqual(errors.filter(e => e?.code === 404).length, 1, 'the check 404 is not one');
+  // one 404 per failed create: the create's own 'cant establish a channel', not the check's
+  assert.strictEqual(errors.filter(e => e?.err?.code === 404).length, errors.length);
 });
 
 test('a check that fails with another code is an error', async () => {
@@ -118,7 +119,7 @@ test('a check that fails with another code is an error', async () => {
   });
   channel.create();
   await settle();
-  assert.ok(errors.some(e => e?.code === 403));
+  assert.ok(errors.some(e => e?.message === 'cant establish a channel' && e.err?.code === 403));
 });
 
 // ---- live broker: no queue created beforehand
@@ -136,6 +137,7 @@ async function livePool(t, channelConf) {
   const connection_name = unique('conn');
   const admin = await amqplib.connect(URL_);
   const adminCh = await admin.createChannel();
+  adminCh.on('error', () => {});
   const queues = [];
   const pool = new AMQPPool([{
     connection: { host: u.hostname, port: Number(u.port), username: decodeURIComponent(u.username),
@@ -149,8 +151,18 @@ async function livePool(t, channelConf) {
     const stopped = pool.stop();
     pool.on('error', () => {});
     await stopped.catch(() => {});
-    for (const q of queues) await adminCh.deleteQueue(q).catch(() => {});
-    await adminCh.deleteExchange(exchange).catch(() => {});
+    // one fresh channel per delete: a refused delete (an exclusive queue held by its connection)
+    // closes its channel, which must not stop the deletes after it or leave the process alive
+    const drop = async (kind, name) => {
+      try {
+        const c = await admin.createChannel();
+        c.on('error', () => {});
+        await c[kind](name).catch(() => {});
+        await c.close().catch(() => {});
+      } catch (e) {} // the admin connection is gone
+    };
+    for (const q of queues) await drop('deleteQueue', q);
+    await drop('deleteExchange', exchange);
     await admin.close().catch(() => {});
   });
   return { pool, adminCh, exchange, errors, queues, connectionName: `${connection_name}_${os.hostname}` };
@@ -174,7 +186,7 @@ test('live: a dynamic queue reconnect emits no error and consumes again',
   const done = consuming(ch);
   ch.consume();
   await done;
-  queues.push(ch.queue.name);
+  // the dynamic queue is exclusive: it goes with its connection
   t.after(() => mgmt('DELETE', queuePath(ch.queue.name)));
   assert.deepStrictEqual(errors, []);
   const recreated = waitEvent(pool, 'recreated');

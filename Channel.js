@@ -24,6 +24,7 @@ class Channel extends EventEmitter {
   #retryTimer = null;
   #retryDelay = 0;
   #temporaryQueue = false;
+  #createFailure = null;   // the channel error a create in flight holds back for its own report
   constructor(connection, channelConfig) {
     super();
     this.hash = hash(channelConfig)
@@ -70,6 +71,10 @@ class Channel extends EventEmitter {
   }
   set alive(isAlive){
     this.#isAlive = isAlive;
+  }
+  // true once close() was called: final, no re-create follows
+  get isClosed(){
+    return this.#closed;
   }
   // alive without its side effect: reading `alive` re-creates a dead channel
   get isAlive(){
@@ -167,9 +172,12 @@ class Channel extends EventEmitter {
           this.amqpChannel = amqpChannel;
           this.emit('info', {message: `Channel created`, id: this._id, old_id})
           // a replaced amqplib channel can still close or error late; only the current one counts
+          // the expected 404 closes the checking channel, and that close is not news either
+          let expectedClose = false;
           this.amqpChannel.on('close', () => {
             if (amqpChannel !== this.amqpChannel) return;
             this.alive = false;
+            if (expectedClose) return;
             this.emit('close')
           });
           this.amqpChannel.on('error', (err) => {
@@ -178,7 +186,14 @@ class Channel extends EventEmitter {
             // the 404 the create's own checkQueue draws for a missing queue: the create declares
             // it next, so it is not an error. Any other 404 on this channel still is.
             if (err?.code === 404 && this.#checking === amqpChannel) {
+              expectedClose = true;
               this.emit('info', {message: 'queue not found, declaring it', queue: this.queue?.name, channelId: this._id});
+              return;
+            }
+            // a create in flight reports its failure once, from its catch: the call this error
+            // refused rejects there. Held back here in case the create goes on (see finally).
+            if (this.#isConnecting) {
+              this.#createFailure ??= err;
               return;
             }
             this.emit('error', err);
@@ -200,6 +215,7 @@ class Channel extends EventEmitter {
     if (this.#closed) return;
     clearTimeout(this.#retryTimer);
     this.#retryTimer = null;
+    this.#createFailure = null;
     let created = false;
     this.#createChannel()
     .then(() => {
@@ -207,11 +223,15 @@ class Channel extends EventEmitter {
             return this.amqpChannel.assertExchange(this.exchange.name, this.exchange.type, this.exchangeOptions).catch( error => {
               if(error.code === 406 && error.classId === 40){
                 this.emit('info', {message: `Durable Escape for connect`})
+                // the escape recovers from this error: it is reported here, not lost to a
+                // later failure
+                if (this.#createFailure) this.emit('error', this.#createFailure);
+                this.#createFailure = null;
                 return this.#createChannel();
               }
               // a close() rejects the pending assert: not an error to report
               if (this.#closed) return;
-              this.emit('error', {message: 'cant assert a exchange ' + error?.message, err: error})
+              throw error;   // the create's catch reports it, once
             });
           }
           if (this?.exchange?.name) {
@@ -245,6 +265,9 @@ class Channel extends EventEmitter {
           return this.connection
         }).finally( _ => {
           this.#isConnecting = false;
+          // an error the create held back and then went on past (a recovered durable escape)
+          const held = this.#createFailure;
+          this.#createFailure = null;
           clearTimeout(this.#retryTimer);
           this.#retryTimer = null;
           // close() closed the amqplib channel: no 'ready', no retry (create() refuses it)
@@ -266,6 +289,7 @@ class Channel extends EventEmitter {
             return;
           }
           this.#retryDelay = 0;
+          if (held) this.emit('error', held);
           this.alive = true;
           this.emit('info', {message: 'channel created', id: this._id})
           // 'ready' fires once per Channel; a re-create emits 'recreated' so 'ready' listeners
@@ -297,8 +321,7 @@ class Channel extends EventEmitter {
                     return true;
                   });
             }
-            // a close() rejects the pending check: not an error to report
-            if (!this.#closed) this.emit('error',err)
+            // the create's catch reports it, once
             throw err;
         })
   }
@@ -371,9 +394,14 @@ class Channel extends EventEmitter {
         this.emit('info', {message: `consume started on queue: ${queue}`})
         this.amqpChannel.consume(this.queue.name, (m) => {
           if (m == null) {
-            this.amqpChannel.close();
+            // the broker cancelled the consumer: close what is left of the channel and re-create
+            // it. A close() that rejects or throws means it is already closed, which is the aim.
+            try { Promise.resolve(this.amqpChannel.close()).catch(() => {}); } catch (e) {}
             this.create();
-            this.emit('error', {message: 'Message is null', channelId: this._id, queue: this.queue?.name, exchange: this.exchange?.name})
+            this.emit('error', {
+              message: 'Message is null', channelId: this._id,
+              queue: this.queue?.name, exchange: this.exchange?.name
+            })
           } else {
             deliveredOn.set(m, amqpChannel);
             m.properties.channelId = this._id;
