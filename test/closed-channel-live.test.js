@@ -24,7 +24,7 @@ async function readyPool(t) {
       { exchange: { name: 'x' }, queue: { name: 'b' } }] }]);
   const heard = { error: [], info: [] };
   for (const event of Object.keys(heard)) pool.on(event, e => heard[event].push(e));
-  t.after(() => pool.stop());
+  t.after(() => pool.stop({ confirmTimeout: 0 }));
   for (let i = 0; i < 50 && pool.getAliveChannels().length < 2; i++) await flush();
   const [A, B] = pool.getAllChannels();
   assert.deepStrictEqual([A.isAlive, B.isAlive], [true, true]);
