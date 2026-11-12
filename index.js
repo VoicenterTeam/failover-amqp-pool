@@ -125,6 +125,8 @@ class AMQPPool extends EventEmitter {
   #atStop = null;
   // A cached hand-back -> the Channel that handed it back, for stop()'s channelId
   #handedBy = new WeakMap();
+  // An 'all' copy split off for one channel -> that Channel, for stop()'s report
+  #splitFor = new WeakMap();
 
   // A stopped pool is final: it opens, creates and sends nothing. The code lets a caller match
   // the error without its text.
@@ -310,6 +312,7 @@ class AMQPPool extends EventEmitter {
     const keep = [];
     for (const channel of channels) {
       const only = { ...entry, filter: this.#onlyChannel(channel, props) };
+      this.#splitFor.set(only, channel);
       keep.push(...this.#send(only, [channel], false, pass, notes));
     }
     return keep;
@@ -386,12 +389,18 @@ class AMQPPool extends EventEmitter {
       const { filter, ...rest } = entry;
       return { ...rest, channelId: this.#handedBy.get(entry)._id };
     }));
-    // filter: the publish strategy ('all', 'rr', a function), so the app can publish it again
-    const unsent = cached.filter(entry => !this.#handedBy.has(entry)).map(entry => ({
-      method: 'publish', msg: entry.msg, topic: entry.topic, props: entry.props,
-      filter: entry.filter, attempts: 0, refusals: 0, reason: 'unsent', cause: null,
-      channelId: null
-    }));
+    // filter: the publish strategy ('all', 'rr', the app's own function), so the app can publish
+    // it again. An 'all' copy split off for one channel was unsent on that channel only: it is
+    // reported as 'all' with that channel's id, never with the pool's internal filter.
+    const unsent = cached.filter(entry => !this.#handedBy.has(entry)).map(entry => {
+      const split = this.#splitFor.get(entry);
+      return {
+        method: 'publish', msg: entry.msg, topic: entry.topic, props: entry.props,
+        filter: split || retryFilters.has(entry.filter) ? 'all' : entry.filter,
+        attempts: 0, refusals: 0, reason: 'unsent', cause: null,
+        channelId: split ? split._id : null
+      };
+    });
     report.push(...unsent);
     if (report.length === 0) return;
     this.#tell([['unconfirmed', report], ['info', {

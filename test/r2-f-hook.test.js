@@ -317,3 +317,32 @@ test('stop(): an \'all\' publish cached while no channel was up is reported with
     assert.deepStrictEqual(heard.unconfirmed.flat().map(e => [e.props.messageId, e.filter]),
       [['p-all', 'all'], ['p-first', undefined]]);
   });
+
+// the reviewer's round-6 probe: an 'all' entry split by one failing channel, then stop(). The
+// held copy on the other channel times out on a real setTimeout(0).
+test('stop(): an \'all\' copy cached for one failed channel is reported with filter all and'
+  + ' that channel', async t => {
+  const { pool, heard, channel, amqp } = await readyPool(t, ['a', 'b']);
+  const [a, b] = [channel(0)._id, channel(1)._id];
+  amqp(1).publishError = new Error('boom');
+  pool.publish({ n: 1 }, 'all', undefined, { messageId: 'split' });
+  assert.deepStrictEqual([amqp(0).published.length, pool.msgCache.length], [1, 1]);
+  await pool.stop({ confirmTimeout: 0 });
+  assert.deepStrictEqual(heard.unconfirmed.flat().map(e => [e.reason, e.filter, e.channelId]),
+    [['timeout', undefined, a], ['unsent', 'all', b]]);
+});
+
+test('an \'unsent\' all copy published again with its filter reaches every channel', async t => {
+  const { pool, heard, amqp } = await readyPool(t, ['a', 'b']);
+  amqp(1).publishError = new Error('boom');
+  pool.publish({ n: 1 }, 'all', undefined, { messageId: 'split' });
+  await pool.stop({ confirmTimeout: 0 });
+  const entry = heard.unconfirmed.flat().find(e => e.reason === 'unsent');
+  const again = new AMQPPool([{ connection: { host: 'rabbit.example', port: 5672 },
+    channels: ['a', 'b'].map(k => ({ exchange: { name: 'x' }, topic: k })) }]);
+  again.on('error', () => {});
+  t.after(() => again.stop({ confirmTimeout: 0 }).catch(() => {}));
+  for (let i = 0; i < 50 && again.getAliveChannels().length < 2; i++) await flush();
+  again.publish(entry.msg, entry.filter, entry.topic, entry.props);
+  assert.deepStrictEqual(again.getAllChannels().map(c => c.amqpChannel.published.length), [1, 1]);
+});
