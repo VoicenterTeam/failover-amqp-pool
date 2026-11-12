@@ -121,14 +121,20 @@ test('#23 a dynamic queue declared again after a re-create keeps expires 1800000
 test('#27 sendToQueue with two arguments sends no third argument', async () => {
   const { channel, fake } = await ready(named(), { strict: true });
   channel.sendToQueue('target', { a: 1 });
-  assert.deepStrictEqual(fake().sent[0].rest, []);
+  // no options object is made up; after the options only #79's confirm callback, if any
+  const [options, ...confirm] = fake().sent[0].rest;
+  assert.strictEqual(options, undefined);
+  assert.ok(confirm.length <= 1 && confirm.every(cb => typeof cb === 'function'));
 });
 
 test('#27 sendToQueue passes its options to amqplib as the third argument', async () => {
   const { channel, fake } = await ready(named(), { strict: true });
   const options = { persistent: true, headers: { h: 1 } };
   channel.sendToQueue('target', { a: 1 }, options);
-  assert.deepStrictEqual(fake().sent[0].rest, [{ persistent: true, headers: { h: 1 } }]);
+  // the options as given; after them only #79's confirm callback, if any
+  const [given, ...confirm] = fake().sent[0].rest;
+  assert.deepStrictEqual(given, { persistent: true, headers: { h: 1 } });
+  assert.ok(confirm.length <= 1 && confirm.every(cb => typeof cb === 'function'));
 });
 
 // a dead channel: the connection is dead too, so reading alive starts no re-create

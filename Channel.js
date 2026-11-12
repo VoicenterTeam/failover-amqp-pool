@@ -14,6 +14,26 @@ const DYNAMIC_QUEUE_EXPIRES = 1800000;
 // the consumer timeout a quorum queue is declared with, ms
 const QUORUM_CONSUMER_TIMEOUT = 7200000;
 
+// the longest wait setTimeout takes, ms; a longer one would fire at once
+const MAX_WAIT = 2147483647;
+
+// A process warning that must not throw itself; the same as index.js's. emitWarning throws on a
+// value that is neither a string nor an Error, and String() can throw. Node prints an Error's
+// warning a tick later, reading its fields: it gets a copy made of strings read here instead.
+function warn(value) {
+  try {
+    if (!(value instanceof Error)) return process.emitWarning(String(value));
+    const copy = new Error(String(value.message));
+    copy.name = String(value.name);
+    const { code, stack } = value;
+    if (code) copy.code = String(code);
+    if (typeof stack === 'string') copy.stack = stack;
+    process.emitWarning(copy);
+  } catch {
+    process.emitWarning('unprintable value');
+  }
+}
+
 class Channel extends EventEmitter {
   #isAlive= false;
   #isConnecting = false;
@@ -26,6 +46,14 @@ class Channel extends EventEmitter {
   #temporaryQueue = false;
   #createFailure = null;   // the channel error a create in flight holds back for its own report
   #connectionFailure = null;   // the broker's connection close that failed a create in flight
+  // amqplib channel -> the messages published on it that the broker has not confirmed (#79)
+  #unconfirmed = new WeakMap();
+  // amqplib channels this Channel closed itself: their unconfirmed messages are not handed back
+  #closedByChannel = new WeakSet();
+  #held = new Set();          // the pending Sets of amqplib channels not yet closed
+  #confirmWaiters = new Set();   // waitConfirmed() calls, each settled once nothing is held
+  #attempts = 0;   // the re-send count resend() gives the send in progress
+  #refusals = 0;   // the refusal count resend() carries on to the send in progress
   constructor(connection, channelConfig) {
     super();
     this.hash = hash(channelConfig)
@@ -149,6 +177,7 @@ class Channel extends EventEmitter {
     if(wasAlive) this.emit('info', {message: `Channel closed`, id: this._id})
     // a create in flight has its amqplib channel too: it must not outlive the close
     if(!this.amqpChannel || !(wasAlive || this.#isConnecting)) return Promise.resolve(true);
+    this.#closedByChannel.add(this.amqpChannel);
     try {
       return Promise.resolve(this.amqpChannel.close()).then(() => true, () => false);
     } catch (error) {
@@ -174,6 +203,7 @@ class Channel extends EventEmitter {
             try { Promise.resolve(amqpChannel.close()).catch(() => {}); } catch (e) {}   // closed
             throw new Error('channel closed while it was being created');
           }
+          this.#trackConfirms(amqpChannel);
           let old_id = this._id;
           this._id = this.#createID();
           // set before the event: a listener that closes the channel must find it to close
@@ -295,6 +325,7 @@ class Channel extends EventEmitter {
           // close() closed the amqplib channel: no 'ready', no retry (create() refuses it)
           if (this.#closed) return;
           if (!created) {
+            if (this.amqpChannel) this.#closedByChannel.add(this.amqpChannel);
             try { this.amqpChannel?.close()?.catch?.(() => {}); } catch (e) {}   // already closed
             // retry while the connection is up; a dead connection re-creates its channels on
             // reconnect. The wait doubles per consecutive failure, from reconnectInterval up to
@@ -324,6 +355,137 @@ class Channel extends EventEmitter {
           // a channel that was consuming resumes on the new amqplib channel
           if(this.autoConsume || this.#consumingOn) this.consume()
         });
+  }
+  // Holds what is published on this amqplib channel until the broker confirms it. Prepended, so
+  // it runs before amqplib's own 'close' listener, which fails each pending confirm callback:
+  // the pending messages come back in one event, and those callbacks find nothing left.
+  #trackConfirms(amqpChannel){
+    const pending = new Set();
+    this.#unconfirmed.set(amqpChannel, pending);
+    this.#held.add(pending);
+    // amqplib emits a channel's own error (404, 406, ...) just before its 'close'; a connection
+    // that closes closes its channels with none
+    let failure = null;
+    amqpChannel.on('error', (err) => { failure = err; });
+    amqpChannel.prependListener('close', () => {
+      const entries = [...pending];
+      pending.clear();
+      this.#held.delete(pending);
+      this.#settleWaiters();
+      const cause = failure && { code: failure.code, message: failure.message };
+      if (!this.#closedByChannel.has(amqpChannel)) return this.#handBack(entries, 'closed', cause);
+      // A close this Channel asked for. Answered over a live connection, the broker has every
+      // message published before it, and amqplib dropped the acks that came while the channel
+      // closed: nothing comes back. A connection that failed first closed the channel instead,
+      // and marks itself down in the same turn: decided on the next tick, those come back.
+      process.nextTick(() => {
+        if (!this.connection.alive) this.#handBack(entries, 'closed', cause);
+      });
+    });
+  }
+  // The confirm callback amqplib gets with the message: an ack forgets it, a nack hands it
+  // back. Neither does anything once the message has left the set.
+  #confirmed(pending, entry){
+    return (err) => {
+      if (!pending.delete(entry)) return;
+      this.#settleWaiters();
+      if (err) this.#handBack([entry], 'nack');
+    };
+  }
+  // Sends the message to amqplib with its confirm callback; tracked only once amqplib took it
+  #sendTracked(entry, send){
+    const pending = this.#unconfirmed.get(this.amqpChannel);
+    const result = send(pending ? this.#confirmed(pending, entry) : undefined);
+    pending?.add(entry);
+    return result;
+  }
+  // Sends a handed-back entry again, as publish() or sendToQueue() sent it the first time, and
+  // throws as they do. Its next hand-back carries attempts + 1, so the pool can cap re-publishes
+  // per message.
+  resend(entry){
+    const method = entry?.method;
+    if (method !== 'publish' && method !== 'sendToQueue') {
+      throw new TypeError("resend: entry must be an 'unconfirmed' entry, with method 'publish' " +
+        "or 'sendToQueue'");
+    }
+    this.#attempts = (Number.isInteger(entry.attempts) ? entry.attempts : 0) + 1;
+    this.#refusals = Number.isInteger(entry.refusals) ? entry.refusals : 0;
+    try {
+      if (method === 'publish') return this.publish(entry.msg, entry.topic, entry.props);
+      return this.sendToQueue(entry.queue, entry.msg, entry.props);
+    } finally {
+      this.#attempts = 0;
+      this.#refusals = 0;
+    }
+  }
+  // Runs what follows a send. A listener's throw is reported as 'error', or with no 'error'
+  // listener (or one that throws too) as a process warning; it never reaches the caller, who
+  // would take the written message for a failed one and send it again.
+  #afterSend(fn){
+    try {
+      fn();
+    } catch (err) {
+      try {
+        if (this.listenerCount('error') === 0) return warn(err);
+        this.emit('error', err);
+      } catch (again) {
+        warn(again);
+      }
+    }
+  }
+  #heldCount(){
+    let count = 0;
+    for (const pending of this.#held) count += pending.size;
+    return count;
+  }
+  #settleWaiters(){
+    if (this.#confirmWaiters.size === 0 || this.#heldCount() > 0) return;
+    for (const settle of [...this.#confirmWaiters]) settle();
+  }
+  // Resolves, never rejects, with the messages still unconfirmed once nothing is held (then [])
+  // or ms has passed, each with reason 'timeout'. Those leftovers are released: no later
+  // confirm or close hands them back, so the caller owns them.
+  waitConfirmed(ms = 5000){
+    if (!Number.isInteger(ms) || ms < 0 || ms > MAX_WAIT) {
+      const got = typeof ms === 'number' ? ms : typeof ms;
+      throw new TypeError(`waitConfirmed: ms must be a whole number from 0 to ${MAX_WAIT}, ` +
+        `got ${got}`);
+    }
+    if (this.#heldCount() === 0) return Promise.resolve([]);
+    return new Promise((resolve) => {
+      const settle = () => {
+        clearTimeout(timer);
+        this.#confirmWaiters.delete(settle);
+        const left = [];
+        for (const pending of this.#held) {
+          left.push(...pending);
+          pending.clear();
+        }
+        resolve(left.map(entry => ({ ...entry, reason: 'timeout', cause: null })));
+        this.#settleWaiters();
+      };
+      const timer = setTimeout(settle, ms);
+      this.#confirmWaiters.add(settle);
+    });
+  }
+  // On the next tick: a listener runs after amqplib and this Channel have handled the close or
+  // the confirm, and its throw cannot cut that handling short. The info says it happened even
+  // when nothing listens to 'unconfirmed'.
+  // A nack, or a close with the channel's own error, is the broker refusing the message: each
+  // counts one in refusals. A connection that closes refuses nothing.
+  #handBack(entries, reason, cause = null){
+    if (entries.length === 0) return;
+    const refused = reason === 'nack' || cause !== null;
+    const handed = entries.map(entry =>
+      ({ ...entry, refusals: entry.refusals + (refused ? 1 : 0), reason, cause }));
+    const info = {
+      message: 'unconfirmed messages handed back', count: handed.length, reason, cause,
+      channelId: this._id
+    };
+    process.nextTick(() => {
+      this.emit('info', info);
+      this.emit('unconfirmed', handed);
+    });
   }
   #createQueue(queue, options){
       // the amqplib channel whose passive check is in flight: its 404 is the expected answer
@@ -373,18 +535,26 @@ class Channel extends EventEmitter {
         let message = Buffer.from(msg);
         const exchange = options.exchange || this.exchange.name;
         const named = this.#exchangeName(options);
+        const entry = {
+          method: 'publish', msg, topic, props: { ...options }, attempts: this.#attempts,
+          refusals: this.#refusals
+        };
         try {
-          publishing(this.connection.url, named, options, withContext =>
-            this.amqpChannel.publish(exchange, topic || "", message, withContext));
+          this.#sendTracked(entry, confirmed =>
+            publishing(this.connection.url, named, options, withContext =>
+              this.amqpChannel.publish(exchange, topic || "", message, withContext, confirmed)));
         } catch (error) {
           countSent(this.connection.url, named, thrownType(error));
           throw error;
         }
-        this.emit("info", {
-          message: 'message published', options: options,
-          exchange: options.exchange || this.exchange, url: this.connection.safeUrl
-        })
-        countSent(this.connection.url, named);
+        // amqplib has the message: a listener's throw from here on is not a failed publish
+        this.#afterSend(() => {
+          this.emit("info", {
+            message: 'message published', options: options,
+            exchange: options.exchange || this.exchange, url: this.connection.safeUrl
+          })
+          countSent(this.connection.url, named);
+        });
       } else {
         countSent(this.connection.url, this.#exchangeName(options), 'channel_dead');
         this.emit('error', {
@@ -434,6 +604,7 @@ class Channel extends EventEmitter {
             if (amqpChannel !== this.amqpChannel) return;
             // the broker cancelled the consumer: close what is left of the channel and re-create
             // it. A close() that rejects or throws means it is already closed, which is the aim.
+            this.#closedByChannel.add(amqpChannel);
             try { Promise.resolve(amqpChannel.close()).catch(() => {}); } catch (e) {}
             if (!this.#isConnecting) this.create();
             this.emit('error', {
@@ -539,15 +710,18 @@ class Channel extends EventEmitter {
       Object.assign(msg, this.msg);
       msg = JSON.stringify(msg)
     }
-    msg = Buffer.from(msg)
+    const entry = {
+      method: 'sendToQueue', queue, msg, props: options && { ...options },
+      attempts: this.#attempts, refusals: this.#refusals
+    };
+    const content = Buffer.from(msg)
     // the default exchange has no name; telemetry names it amq.default
     try {
-      // no options and no SDK: publishing hands back undefined, and amqplib gets the two
-      // arguments it always got
-      publishing(this.connection.url, undefined, options, withContext =>
-        withContext === undefined
-          ? this.amqpChannel.sendToQueue(queue, msg)
-          : this.amqpChannel.sendToQueue(queue, msg, withContext));
+      // no options and no SDK: publishing hands back undefined, and amqplib gets undefined
+      // options, as it got no options before, then the confirm callback
+      this.#sendTracked(entry, confirmed =>
+        publishing(this.connection.url, undefined, options, withContext =>
+          this.amqpChannel.sendToQueue(queue, content, withContext, confirmed)));
     } catch (error) {
       countSent(this.connection.url, undefined, thrownType(error));
       throw error;

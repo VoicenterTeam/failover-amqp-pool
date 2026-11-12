@@ -24,16 +24,22 @@ declare class AMQPPool extends EventEmitter {
      */
     start(msgCacheInterval?: number): void;
     /**
-     * Stops the retry timer, removes the pool's SIGINT listener and the listeners it added to
-     * its connections and channels, and closes every connection. The app's own listeners
-     * ('info', 'error' and any other) stay, and a stopped pool emits nothing more, so a
-     * teardown error is not heard. (A SIGINT stop gives those listeners its one 'info' or
-     * 'error'.) Takes no callback. Resolves, once each connection is closed and removed, with
-     * one entry per connection: its position when stop() began.
+     * Stops the retry timer and removes the pool's SIGINT listener. Then it waits up to
+     * `confirmTimeout` ms (default 5000) for the broker to confirm what the channels hold, and
+     * reports what is still unconfirmed once, with everything left in msgCache, which it
+     * empties (never-sent messages as reason 'unsent'): one 'unconfirmed' event with every
+     * entry, and one 'info' { message: 'unconfirmed messages at stop', count, unsent }. Then it
+     * removes the listeners it added to its connections and channels, and closes every
+     * connection. The app's own listeners ('info', 'error' and any other) stay, and a stopped
+     * pool emits nothing more, so a teardown error is not heard. (A SIGINT stop gives those
+     * listeners its one 'info' or 'error'.) Takes no callback. Resolves, once each connection
+     * is closed and removed, with one entry per connection: its position when stop() began.
+     * Rejects with a TypeError, before anything stops, for a confirmTimeout that is not a
+     * whole number from 0 to 2147483647.
      * A stopped pool is final: addConnection(), createConnection(), createChannel(), start() and
      * publish() throw a {@link AMQPPool.PoolStoppedError} after it.
      */
-    stop(): Promise<number[]>;
+    stop(options?: AMQPPool.StopOptions): Promise<number[]>;
     /**
      * Adds the connections and channels of a config array; returns the new channels' ids.
      * @throws {AMQPPool.PoolStoppedError} after stop().
@@ -77,6 +83,11 @@ declare class AMQPPool extends EventEmitter {
     on(event: 'error', listener: (error: any) => void): this;
     /** A string or an object with a `message`. */
     on(event: 'info', listener: (info: any) => void): this;
+    /** Only from stop(): the hand-backs still cached, those handed back during its wait, and
+     *  what was still unconfirmed when the wait ended, each with the id of the channel that
+     *  held it; then every message cached unsent, reason 'unsent', channelId null. While the
+     *  pool runs, handed-back messages are re-sent. */
+    on(event: 'unconfirmed', listener: (entries: Array<AMQPPool.StopEntry>) => void): this;
     /** Other event names. Excludes the names above so a mistyped listener for one of them is
      *  a type error, not a fallback match. */
     on<E extends string | symbol>(
@@ -90,6 +101,7 @@ declare class AMQPPool extends EventEmitter {
     once(event: 'connection', listener: (url: string) => void): this;
     once(event: 'channelMessage', listener: (msg: ConsumeMessage) => void): this;
     once(event: 'error' | 'info', listener: (payload: any) => void): this;
+    once(event: 'unconfirmed', listener: (entries: Array<AMQPPool.StopEntry>) => void): this;
     once<E extends string | symbol>(
         event: E extends AMQPPool.PoolEvent ? never : E,
         listener: (...args: any[]) => void
@@ -139,7 +151,69 @@ declare namespace AMQPPool {
 
     /** Every event name the pool emits with a typed payload. */
     type PoolEvent =
-        'ready' | 'recreated' | 'close' | 'connection' | 'channelMessage' | 'error' | 'info';
+        'ready' | 'recreated' | 'close' | 'connection' | 'channelMessage' | 'error' | 'info' |
+        'unconfirmed';
+
+    interface StopOptions {
+        /** How long stop() waits for confirms, ms. Default 5000. */
+        confirmTimeout?: number;
+    }
+
+    /** The channel's own error a 'closed' entry carries: 404 or 406, say. */
+    interface UnconfirmedCause {
+        code: number | undefined;
+        message: string;
+    }
+
+    interface UnconfirmedCommon {
+        /** As sent: an object was JSON already. */
+        msg: string;
+        /** How many times the pool sent it again. */
+        attempts: number;
+        /** How many times the broker refused it (a nack, or a close with a cause). The pool
+         *  drops a message refused once more after 5 re-sends; connection drops never count. */
+        refusals: number;
+        /** 'nack' and 'closed' from the broker; 'timeout' from waitConfirmed(). */
+        reason: 'nack' | 'closed' | 'timeout';
+        /** The error the channel closed with, on every message that close hands back. null for
+         *  a connection drop, a nack or a timeout. */
+        cause: UnconfirmedCause | null;
+    }
+
+    /** A message a Channel holds until the broker confirms it, handed back by 'unconfirmed'
+     *  or returned by waitConfirmed(). */
+    type UnconfirmedEntry =
+        (UnconfirmedCommon & { method: 'publish', topic: string, props: PublishOptions }) |
+        (UnconfirmedCommon & {
+            method: 'sendToQueue', queue: string, props: Options.Publish | undefined
+        });
+
+    /** What a Channel's 'unconfirmed' event carries: never 'timeout', which only
+     *  waitConfirmed() returns. */
+    type HandedBackEntry = UnconfirmedEntry & { reason: 'nack' | 'closed' };
+
+    /** An entry in stop()'s report, with the id of the channel that held it. */
+    type StopEntry = (UnconfirmedEntry & { channelId: string }) | UnsentEntry;
+
+    /** In stop()'s report, after the hand-backs: a message publish() cached because no channel
+     *  took it, never written to amqplib. Its msg is as publish() got it. An 'all' message that
+     *  failed on one channel is unsent on that channel only: filter 'all' and that channel's
+     *  channelId. Published again with 'all', a channel that already took it gets it twice. */
+    interface UnsentEntry {
+        method: 'publish';
+        msg: string | object;
+        topic: string | undefined;
+        props: PublishOptions | undefined;
+        /** The publish strategy it was cached with: 'all', 'rr', the app's own function, or
+         *  none. Never a function of the pool's own. */
+        filter?: 'rr' | 'all' | (string & {}) | PublishFilter;
+        attempts: 0;
+        refusals: 0;
+        reason: 'unsent';
+        cause: null;
+        /** The channel an 'all' copy was unsent on; null for any other unsent message. */
+        channelId: string | null;
+    }
 
     // Actually options are different for Queue, Exchange, Channel and so on...
     // Here we just put all the things into one object and make all props non mandatory
@@ -256,7 +330,8 @@ declare namespace AMQPPool {
         Channel | Array<Channel> | null | undefined | false;
 
     type ChannelEvent =
-        'ready' | 'recreated' | 'message' | 'channelMessage' | 'close' | 'error' | 'info';
+        'ready' | 'recreated' | 'message' | 'channelMessage' | 'close' | 'error' | 'info' |
+        'unconfirmed';
 
     /** Not exported at runtime: reach one through `pool.getAllChannels()` or the 'ready' event. */
     interface Channel extends EventEmitter {
@@ -309,12 +384,24 @@ declare namespace AMQPPool {
         on(event: 'message' | 'channelMessage', listener: (msg: ConsumeMessage) => void): this;
         on(event: 'close', listener: () => void): this;
         on(event: 'error' | 'info', listener: (payload: any) => void): this;
+        /** A nack hands back one message; a close of the amqplib channel, all it held, in one
+         *  event and in publish order. A close the channel asked for itself hands back nothing
+         *  while the connection is up. Fires on the next tick. */
+        on(event: 'unconfirmed', listener: (entries: Array<HandedBackEntry>) => void): this;
         on<E extends string | symbol>(
             event: E extends ChannelEvent ? never : E,
             listener: (...args: any[]) => void
         ): this;
 
         hasCachedAck(): boolean;
+        /** Resolves with [] once the broker has confirmed everything the channel holds, or after
+         *  `ms` (default 5000) with what is still unconfirmed, reason 'timeout'. Those are
+         *  released: nothing hands them back later. Never rejects. Throws a TypeError for an ms
+         *  that is not a whole number from 0 to 2147483647. */
+        waitConfirmed(ms?: number): Promise<Array<UnconfirmedEntry>>;
+        /** Sends a handed-back entry again, as publish() or sendToQueue() sent it, and throws as
+         *  they do. Its next hand-back carries attempts + 1. */
+        resend(entry: UnconfirmedEntry): void;
         /**
          * Sends through the default exchange. `options` are amqplib's and are not changed.
          * Throws Error('Channel is dead!') on a dead channel, after an 'error' event.

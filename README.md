@@ -637,6 +637,144 @@ connection URL.
 `'Message is null'` is the broker cancelling a consumer, for example by deleting its queue. The
 channel closes its amqplib channel (already closed is fine), re-creates it and consumes again.
 
+## Delivery guarantees
+
+Delivery is at-least-once. Channels publish on a confirm channel, and each message that
+`publish()` or `sendToQueue()` hands to amqplib stays in memory until the broker confirms it.
+A message the broker nacks, or one still unconfirmed when its amqplib channel or the connection
+closes, is handed back, and the pool sends it again. Consumers can get a message twice: see
+[Duplicates](#duplicates).
+
+### What the pool does with a handed-back message
+
+- It caches the message, and `start()`'s next tick sends it again on the channel that lost it,
+  and on no other. An `'all'` message goes back only to the channel it was lost on. A
+  `sendToQueue()` message goes back to the same queue on the same channel. While that channel
+  is down the message waits in the cache, and the tick sends every waiting message in one pass,
+  in the order they were handed back.
+- Only refusals are capped. A refusal is a nack, or a close with the channel's own error (a
+  `cause`). A message the broker refuses is sent again at most 5 times. When it is refused
+  once more, the pool drops it with one `'info'` event, `{ message: 'cached message dropped',
+  messageId, channelId, reason: 'refused too many times', refusals, attempts, lastReason,
+  cause }`. For example, a queue that refuses publishes when full (`x-overflow:
+  reject-publish`) nacks every attempt, and its messages are dropped after the fifth retry with
+  `lastReason: 'nack'`. A connection drop is no refusal and never counts: however many times
+  the connection goes, a message is sent again until the broker confirms it or stop() reports
+  it.
+- A message handed back by a channel closed with `close()` is dropped with one `'info'` event,
+  `reason: 'channel is closed'`. A channel removed from the pool drops what is cached for it.
+- Ordering: messages handed back by one close keep their publish order. When a synchronous
+  burst of publishes runs past a drop, a message that failed after the drop can be cached ahead
+  of the messages that close hands back, so it goes out first.
+
+### stop() waits for confirms
+
+`await amqp.stop({ confirmTimeout })` stops the retry timer, then waits up to `confirmTimeout` ms
+(default 5000) for the broker to confirm what the channels hold. Then it reports, once, every
+message the pool still has, and sends none of them again. The report holds, in this order:
+
+1. handed-back messages still waiting in the cache for a channel that never came back (a broker
+   down at shutdown), with the `channelId` of the channel that lost them;
+2. messages handed back during the wait, and those still unconfirmed when it ended (`reason:
+   'timeout'`), each with its `channelId`;
+3. then, in cache order, messages `publish()` cached because no channel took them:
+   `reason: 'unsent'`, and `msg` as `publish()` got it. Most were never sent, with
+   `channelId: null`. An `'all'` message that failed on one channel was unsent on that channel
+   only: it has `filter: 'all'` and that channel's `channelId`.
+
+`msgCache` is empty afterwards. An `'unsent'` entry keeps the `filter` it was cached with
+(`'all'`, `'rr'`, the app's own function, or none), so the app can publish it again with the
+same strategy. Published again with `'all'`, an `'all'` message unsent on one channel reaches
+every channel, so the channels that already took it get it twice, which at-least-once allows.
+
+```javascript
+amqp.on('unconfirmed', (entries) => {
+  // only from stop()
+  for (const entry of entries) {
+    if (entry.reason === 'unsent') {
+      // not sent: { method: 'publish', msg, topic, props, filter, channelId, ... }
+    } else {
+      // sent and not confirmed: an entry as below, plus channelId
+    }
+  }
+  saveForLater(entries);
+});
+await amqp.stop({ confirmTimeout: 2000 });
+```
+
+An `'info'` event `{ message: 'unconfirmed messages at stop', count, unsent }` goes with it,
+where `unsent` counts the never-sent messages. A listener that throws is reported as a process
+warning, and `stop()` still resolves. `stop()` never waits longer than `confirmTimeout`, and
+resolves at once when nothing is in flight. A `confirmTimeout` that is not a whole number from
+0 to 2147483647 rejects with a `TypeError`, and the pool keeps running. The SIGINT stop waits
+the default 5000 ms at most.
+
+### The Channel's side
+
+A `Channel` hands messages back in an `'unconfirmed'` event:
+
+```javascript
+channel.on('unconfirmed', (entries) => {
+  for (const entry of entries) {
+    // publish:     { method: 'publish', msg, topic, props, attempts, refusals, reason, cause }
+    // sendToQueue: { method: 'sendToQueue', queue, msg, props, attempts, refusals, reason,
+    //                cause }
+    // reason: 'nack' or 'closed'; only waitConfirmed() returns 'timeout'
+    // refusals: nacks and closes with a cause so far, which the pool caps
+    // cause: the channel's own error, { code, message }, or null
+  }
+});
+```
+
+- `msg` is the message as it was sent (an object is already JSON), and `props` is a copy of
+  the options it was sent with. `channel.resend(entry)` sends an entry again as it was first
+  sent. Its next hand-back carries `attempts` one higher and keeps `refusals`, which a nack or
+  a close with a `cause` raises by one. The pool counts re-sends and refusals this way.
+- A close hands back all of that channel's unconfirmed messages in one event, in publish
+  order. A nack hands back one message.
+- `cause` tells a refusal from a drop. When the broker closes the channel with an error of its
+  own, for example `404` for a missing exchange or `406` for a precondition, `cause` is that
+  error's `code` and `message`, on every message that close hands back. Only the message that
+  drew the error draws it again. When the connection closes, `cause` is `null`. It is also
+  `null` for a nack.
+- Each message is handed back at most once, and only after its confirm has failed or its
+  channel has closed, never while its confirm is still pending.
+- A close the channel asks for itself hands nothing back while the connection is up. That is
+  `close()`, the close of an amqplib channel whose create failed, and the re-create after the
+  broker cancels its consumer. The broker has every message published before such a close,
+  and amqplib drops the confirms that arrive while the channel closes. If the connection fails
+  before the broker answers the close, the messages are handed back as `'closed'`.
+- The event fires on the next tick, after the channel has handled the close. Each hand-back
+  also emits an `'info'` event, `{ message: 'unconfirmed messages handed back', count, reason,
+  cause, channelId }`.
+- A publish that throws is not held: the caller already knows it failed. Once amqplib has
+  taken a message, a listener that throws on the `'message published'` info does not make
+  `publish()` throw. The throw is reported as `'error'`, or as a process warning when nothing
+  listens to `'error'`.
+
+`channel.waitConfirmed(ms = 5000)` is what `stop()` waits on. It resolves with `[]` as soon as
+the broker has confirmed everything the channel holds. Otherwise, after `ms`, it resolves with
+the messages still unconfirmed, each with `reason: 'timeout'`. It never rejects. The messages
+it returns are released: no later confirm or close hands them back. A close during the wait
+hands its messages back as usual, and the wait then resolves with `[]`. `ms` must be a whole
+number from 0 to 2147483647; anything else throws a `TypeError`.
+
+### Duplicates
+
+A message the broker routed but whose confirm was lost with the connection is in the queue and
+is also sent again. A `publish()` copy carries the same `messageId`, so a consumer can drop the
+second one. `sendToQueue()` sets no `messageId`: its copies carry one only if the caller set
+`messageId` in its options.
+
+### Memory
+
+The messages held are those in flight on each amqplib channel: written to or buffered for the
+socket, and not yet confirmed. RabbitMQ normally confirms within milliseconds, so the set stays
+near the publish rate times the confirm latency. A broker that stops confirming, for example
+under a memory or disk alarm, makes it grow with every publish until confirms resume or the
+channel closes. The socket already buffers the same messages in that case. Handed-back
+messages waiting for their channel count in the cache, as `cached`.
+
 ## Graceful Shutdown
 
 To properly close all connections and channels:

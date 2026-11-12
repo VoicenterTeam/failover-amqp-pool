@@ -66,7 +66,10 @@ test('sendToQueue sends the JSON buffer to amqplib with the queue name', async (
   assert.strictEqual(fake().sent.length, 1);
   assert.strictEqual(fake().sent[0].queue, 'target');
   assert.deepStrictEqual(fake().sent[0].content, Buffer.from(JSON.stringify(obj)));
-  assert.deepStrictEqual(fake().sent[0].rest, []);
+  // no options object is made up; after the options only #79's confirm callback, if any
+  const [options, ...confirm] = fake().sent[0].rest;
+  assert.strictEqual(options, undefined);
+  assert.ok(confirm.length <= 1 && confirm.every(cb => typeof cb === 'function'));
 });
 
 test('sendToQueue is counted on messaging.client.sent.messages, amq.default', async t => {
