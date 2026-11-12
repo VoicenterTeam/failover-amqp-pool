@@ -670,26 +670,39 @@ closes, is handed back, and the pool sends it again. Consumers can get a message
 ### stop() waits for confirms
 
 `await amqp.stop({ confirmTimeout })` stops the retry timer, then waits up to `confirmTimeout` ms
-(default 5000) for the broker to confirm what the channels hold. Whatever is still unconfirmed
-when the wait ends, or is handed back during it, is reported once and not sent again. So are
-handed-back messages still waiting in the cache for a channel that never came back (a broker
-down at shutdown): they leave `msgCache` for the report. A message cached because no channel
-was up when it was published was never sent; it stays in `msgCache`, as before, and is not in
-the report:
+(default 5000) for the broker to confirm what the channels hold. Then it reports, once, every
+message the pool still has, and sends none of them again. The report holds, in this order:
+
+1. handed-back messages still waiting in the cache for a channel that never came back (a broker
+   down at shutdown), with the `channelId` of the channel that lost them;
+2. messages handed back during the wait, and those still unconfirmed when it ended (`reason:
+   'timeout'`), each with its `channelId`;
+3. then, in cache order, messages `publish()` cached because no channel was up, which were
+   never sent: `reason: 'unsent'`, `channelId: null`, and `msg` as `publish()` got it.
+
+`msgCache` is empty afterwards.
 
 ```javascript
 amqp.on('unconfirmed', (entries) => {
-  // only from stop(): each entry as below, plus channelId
+  // only from stop()
+  for (const entry of entries) {
+    if (entry.reason === 'unsent') {
+      // never sent: { method: 'publish', msg, topic, props, channelId: null, ... }
+    } else {
+      // sent and not confirmed: an entry as below, plus channelId
+    }
+  }
   saveForLater(entries);
 });
 await amqp.stop({ confirmTimeout: 2000 });
 ```
 
-An `'info'` event `{ message: 'unconfirmed messages at stop', count }` goes with it. A
-listener that throws is reported as a process warning, and `stop()` still resolves. `stop()`
-never waits longer than `confirmTimeout`, and resolves at once when nothing is in flight. A
-`confirmTimeout` that is not a whole number from 0 to 2147483647 rejects with a `TypeError`,
-and the pool keeps running. The SIGINT stop waits the default 5000 ms at most.
+An `'info'` event `{ message: 'unconfirmed messages at stop', count, unsent }` goes with it,
+where `unsent` counts the never-sent messages. A listener that throws is reported as a process
+warning, and `stop()` still resolves. `stop()` never waits longer than `confirmTimeout`, and
+resolves at once when nothing is in flight. A `confirmTimeout` that is not a whole number from
+0 to 2147483647 rejects with a `TypeError`, and the pool keeps running. The SIGINT stop waits
+the default 5000 ms at most.
 
 ### The Channel's side
 
