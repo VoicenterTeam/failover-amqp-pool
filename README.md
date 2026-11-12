@@ -680,14 +680,15 @@ message the pool still has, and sends none of them again. The report holds, in t
 3. then, in cache order, messages `publish()` cached because no channel was up, which were
    never sent: `reason: 'unsent'`, `channelId: null`, and `msg` as `publish()` got it.
 
-`msgCache` is empty afterwards.
+`msgCache` is empty afterwards. An `'unsent'` entry keeps the `filter` it was cached with
+(`'all'`, `'rr'`, a function, or none), so the app can publish it again with the same strategy.
 
 ```javascript
 amqp.on('unconfirmed', (entries) => {
   // only from stop()
   for (const entry of entries) {
     if (entry.reason === 'unsent') {
-      // never sent: { method: 'publish', msg, topic, props, channelId: null, ... }
+      // never sent: { method: 'publish', msg, topic, props, filter, channelId: null, ... }
     } else {
       // sent and not confirmed: an entry as below, plus channelId
     }
