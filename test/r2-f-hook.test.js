@@ -256,3 +256,29 @@ test('stop() takes the pool\'s unconfirmed listener off each channel', async t =
   await pool.stop();
   assert.deepStrictEqual([before, first.listenerCount('unconfirmed')], [1, 0]);
 });
+
+test('stop(): a hand-back still cached (its channel never came back) is in the one report',
+  async t => {
+    const { pool, heard, channel, amqp } = await readyPool(t, ['a'], BOTH);
+    const id = channel(0)._id;
+    pool.publish({ n: 1 }, undefined, undefined, { messageId: 'm-1' });
+    amqp(0).emit('close');   // a connection-drop close: the hand-back is cached
+    await tick();
+    assert.strictEqual(pool.msgCache.length, 1);
+    await pool.stop({ confirmTimeout: 0 });
+    const report = heard.unconfirmed.map(es => es.map(e =>
+      [e.props.messageId, e.reason, e.channelId, 'filter' in e]));
+    assert.deepStrictEqual(report, [[['m-1', 'closed', id, false]]]);
+    assert.strictEqual(pool.msgCache.length, 0);
+  });
+
+test('stop(): a message cached because no channel was up stays in msgCache, unreported',
+  async t => {
+    const { pool, heard, channel, amqp } = await readyPool(t, ['a'], BOTH);
+    amqp(0).emit('close');
+    channel(0).connection.alive = false;   // down: a publish now is cached, never written
+    pool.publish({ n: 2 }, undefined, undefined, { messageId: 'm-2' });
+    await pool.stop({ confirmTimeout: 0 });
+    assert.deepStrictEqual([heard.unconfirmed, pool.msgCache.map(e => e.props.messageId)],
+      [[], ['m-2']]);
+  });

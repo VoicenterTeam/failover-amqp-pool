@@ -123,6 +123,8 @@ class AMQPPool extends EventEmitter {
   #done = new WeakMap();
   // While stop() waits for confirms: what the channels hand back, for its one report
   #atStop = null;
+  // A cached hand-back -> the Channel that handed it back, for stop()'s channelId
+  #handedBy = new WeakMap();
 
   // A stopped pool is final: it opens, creates and sends nothing. The code lets a caller match
   // the error without its text.
@@ -374,6 +376,19 @@ class AMQPPool extends EventEmitter {
     await new Promise(resolve => process.nextTick(resolve));
     this.#atStop = null;
     report.push(...left.flat());
+    // hand-backs still cached for a channel that never came back: written once, never
+    // confirmed, so reported too. A message cached because no channel took it was never
+    // written; it stays in msgCache.
+    const waiting = this.msgCache.filter(entry => this.#handedBy.has(entry));
+    if (waiting.length > 0) {
+      const kept = this.msgCache.filter(entry => !this.#handedBy.has(entry));
+      this.msgCache.length = 0;
+      this.msgCache.push(...kept);
+      report.unshift(...waiting.map(entry => {
+        const { filter, ...rest } = entry;
+        return { ...rest, channelId: this.#handedBy.get(entry)._id };
+      }));
+    }
     if (report.length === 0) return;
     this.#tell([['unconfirmed', report],
       ['info', { message: 'unconfirmed messages at stop', count: report.length }]], true);
@@ -394,7 +409,9 @@ class AMQPPool extends EventEmitter {
       const drop = channel.isClosed ? 'channel is closed'
         : entry.refusals > MAX_RESENDS ? 'refused too many times' : null;
       if (!drop) {
-        this.#cache({ ...entry, filter: this.#onlyChannel(channel, entry.props) });
+        const cached = { ...entry, filter: this.#onlyChannel(channel, entry.props) };
+        this.#handedBy.set(cached, channel);
+        this.#cache(cached);
         continue;
       }
       const info = { message: 'cached message dropped', messageId: entry.props?.messageId,
