@@ -10,6 +10,9 @@ pool.on('unconfirmed', (entries) => {
         if (entry.reason === 'unsent') {
             const none: null = entry.channelId;
             const msg: string | object = entry.msg;
+            if (entry.filter === 'all') {
+                pool.publish(entry.msg, entry.filter, entry.topic, entry.props);
+            }
             continue;
         }
         const id: string = entry.channelId;

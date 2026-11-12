@@ -202,6 +202,8 @@ declare namespace AMQPPool {
         msg: string | object;
         topic: string | undefined;
         props: PublishOptions | undefined;
+        /** The publish strategy it was cached with, to publish it again the same way. */
+        filter?: 'rr' | 'all' | (string & {}) | PublishFilter;
         attempts: 0;
         refusals: 0;
         reason: 'unsent';
