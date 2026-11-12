@@ -7,6 +7,11 @@ declare const channel: AMQPPool.Channel;
 
 pool.on('unconfirmed', (entries) => {
     for (const entry of entries) {
+        if (entry.reason === 'unsent') {
+            const none: null = entry.channelId;
+            const msg: string | object = entry.msg;
+            continue;
+        }
         const id: string = entry.channelId;
         const left: 'nack' | 'closed' | 'timeout' = entry.reason;
         const code: number | undefined = entry.cause?.code;
