@@ -181,7 +181,7 @@ test('sendToQueue: a nack hands back the queue, message and options, reason nack
   fake().confirms[0](nacked());
   await tick();
   assert.deepStrictEqual(handed, [[{ method: 'sendToQueue', queue: 'target', msg: '{"n":1}',
-    props: { messageId: 's-1' }, attempts: 0, reason: 'nack', cause: null }]]);
+    props: { messageId: 's-1' }, attempts: 0, refusals: 1, reason: 'nack', cause: null }]]);
 });
 
 test('sendToQueue: a close hands back a pending message, reason closed', async () => {
@@ -190,7 +190,7 @@ test('sendToQueue: a close hands back a pending message, reason closed', async (
   fake().close();
   await tick();
   assert.deepStrictEqual(handed, [[{ method: 'sendToQueue', queue: 'target', msg: '{"n":1}',
-    props: undefined, attempts: 0, reason: 'closed', cause: null }]]);
+    props: undefined, attempts: 0, refusals: 0, reason: 'closed', cause: null }]]);
 });
 
 test('on a close, \'unconfirmed\' fires after the channel has marked itself down', async () => {
@@ -475,4 +475,56 @@ test('resend() refuses what is not a handed-back entry, naming entry', async () 
     assert.throws(() => channel.resend(entry),
       { name: 'TypeError', message: /^resend: entry must be/ }, row);
   }
+});
+
+// ---- refusals: what the broker refused, which the pool caps (#79, owner: "Cap refusals only").
+// A nack and a close with the channel's own error count one; a close without one does not.
+
+test('a nack hands back with refusals 1', async () => {
+  const { channel, handed, fake } = await ready();
+  channel.publish({ n: 1 });
+  fake().confirms[0](nacked());
+  await tick();
+  assert.deepStrictEqual(handed.flat().map(e => e.refusals), [1]);
+});
+
+test('a close with the channel\'s own error hands back with refusals 1', async () => {
+  const { channel, handed, fake } = await ready();
+  channel.publish({ n: 1 });
+  fake().emit('error', Object.assign(new Error('NOT_FOUND'), { code: 404 }));
+  fake().close();
+  await tick();
+  assert.deepStrictEqual(handed.flat().map(e => e.refusals), [1]);
+});
+
+test('a close with no channel error, a connection drop, hands back with refusals 0',
+  async () => {
+    const { channel, handed, fake } = await ready();
+    channel.publish({ n: 1 });
+    fake().close();
+    await tick();
+    assert.deepStrictEqual(handed.flat().map(e => e.refusals), [0]);
+  });
+
+test('resend() carries refusals on: a second nack hands back refusals 2', async () => {
+  const { channel, handed, fake } = await ready();
+  channel.publish({ n: 1 });
+  fake().confirms[0](nacked());
+  await tick();
+  channel.resend(handed[0][0]);
+  fake().confirms[1](nacked());
+  await tick();
+  assert.deepStrictEqual(handed.flat().map(e => e.refusals), [1, 2]);
+});
+
+test('waitConfirmed() leftovers keep their refusals: a timeout is no refusal', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { channel, handed, fake } = await ready();
+  channel.publish({ n: 1 });
+  fake().confirms[0](nacked());
+  await tick();
+  channel.resend(handed[0][0]);
+  const waited = channel.waitConfirmed(10);
+  t.mock.timers.tick(10);
+  assert.deepStrictEqual((await waited).map(e => [e.reason, e.refusals]), [['timeout', 1]]);
 });

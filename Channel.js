@@ -53,6 +53,7 @@ class Channel extends EventEmitter {
   #held = new Set();          // the pending Sets of amqplib channels not yet closed
   #confirmWaiters = new Set();   // waitConfirmed() calls, each settled once nothing is held
   #attempts = 0;   // the re-send count resend() gives the send in progress
+  #refusals = 0;   // the refusal count resend() carries on to the send in progress
   constructor(connection, channelConfig) {
     super();
     this.hash = hash(channelConfig)
@@ -408,11 +409,13 @@ class Channel extends EventEmitter {
         "or 'sendToQueue'");
     }
     this.#attempts = (Number.isInteger(entry.attempts) ? entry.attempts : 0) + 1;
+    this.#refusals = Number.isInteger(entry.refusals) ? entry.refusals : 0;
     try {
       if (method === 'publish') return this.publish(entry.msg, entry.topic, entry.props);
       return this.sendToQueue(entry.queue, entry.msg, entry.props);
     } finally {
       this.#attempts = 0;
+      this.#refusals = 0;
     }
   }
   // Runs what follows a send. A listener's throw is reported as 'error', or with no 'error'
@@ -468,9 +471,13 @@ class Channel extends EventEmitter {
   // On the next tick: a listener runs after amqplib and this Channel have handled the close or
   // the confirm, and its throw cannot cut that handling short. The info says it happened even
   // when nothing listens to 'unconfirmed'.
+  // A nack, or a close with the channel's own error, is the broker refusing the message: each
+  // counts one in refusals. A connection that closes refuses nothing.
   #handBack(entries, reason, cause = null){
     if (entries.length === 0) return;
-    const handed = entries.map(entry => ({ ...entry, reason, cause }));
+    const refused = reason === 'nack' || cause !== null;
+    const handed = entries.map(entry =>
+      ({ ...entry, refusals: entry.refusals + (refused ? 1 : 0), reason, cause }));
     const info = {
       message: 'unconfirmed messages handed back', count: handed.length, reason, cause,
       channelId: this._id
@@ -529,7 +536,8 @@ class Channel extends EventEmitter {
         const exchange = options.exchange || this.exchange.name;
         const named = this.#exchangeName(options);
         const entry = {
-          method: 'publish', msg, topic, props: { ...options }, attempts: this.#attempts
+          method: 'publish', msg, topic, props: { ...options }, attempts: this.#attempts,
+          refusals: this.#refusals
         };
         try {
           this.#sendTracked(entry, confirmed =>
@@ -703,7 +711,8 @@ class Channel extends EventEmitter {
       msg = JSON.stringify(msg)
     }
     const entry = {
-      method: 'sendToQueue', queue, msg, props: options && { ...options }, attempts: this.#attempts
+      method: 'sendToQueue', queue, msg, props: options && { ...options },
+      attempts: this.#attempts, refusals: this.#refusals
     };
     const content = Buffer.from(msg)
     // the default exchange has no name; telemetry names it amq.default
