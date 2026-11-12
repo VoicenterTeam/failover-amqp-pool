@@ -5,7 +5,8 @@ const { watchPool } = require('./telemetry/metrics');
 // Filters built by #onlyChannel: their failed retries stay silent, as an 'all' publish is.
 const retryFilters = new WeakSet();
 
-// How many times a message a Channel hands back is sent again before the pool drops it
+// How many times a message the broker refused (a nack, or a channel error) is sent again
+// before the pool drops it. A connection drop is no refusal and does not count.
 const MAX_RESENDS = 5;
 // The longest confirmTimeout stop() takes, ms: setTimeout's own limit
 const MAX_WAIT = 2147483647;
@@ -379,8 +380,9 @@ class AMQPPool extends EventEmitter {
   }
 
   // A Channel's 'unconfirmed' entries: cached for start()'s tick, which sends each again on that
-  // channel only. A channel closed with close() takes nothing, and a message sent again
-  // MAX_RESENDS times is dropped, so one the broker always refuses does not go round forever.
+  // channel only. A channel closed with close() takes nothing, and a message the broker refused
+  // once more after MAX_RESENDS re-sends is dropped, so one it always refuses does not go round
+  // forever. Connection drops never drop a message.
   #unconfirmed(channel, entries) {
     if (this.#atStop) {
       this.#atStop.push(...entries.map(e => ({ ...e, channelId: channel._id })));
@@ -390,7 +392,7 @@ class AMQPPool extends EventEmitter {
     const notes = [];
     for (const entry of entries) {
       const drop = channel.isClosed ? 'channel is closed'
-        : entry.attempts >= MAX_RESENDS ? 're-publish limit reached' : null;
+        : entry.refusals > MAX_RESENDS ? 'refused too many times' : null;
       if (!drop) {
         this.#cache({ ...entry, filter: this.#onlyChannel(channel, entry.props) });
         continue;
@@ -398,8 +400,8 @@ class AMQPPool extends EventEmitter {
       const info = { message: 'cached message dropped', messageId: entry.props?.messageId,
         channelId: channel._id, reason: drop };
       if (drop !== 'channel is closed') {
-        Object.assign(info, { attempts: entry.attempts, lastReason: entry.reason,
-          cause: entry.cause });
+        Object.assign(info, { refusals: entry.refusals, attempts: entry.attempts,
+          lastReason: entry.reason, cause: entry.cause });
       }
       notes.push(['info', info]);
     }

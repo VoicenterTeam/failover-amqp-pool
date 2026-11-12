@@ -128,8 +128,25 @@ test('a message nacked on every send goes out 1 + 5 times, then is dropped with 
     assert.strictEqual(amqp(0).published.length, 6);
     assert.deepStrictEqual(drops(heard), [{ message: 'cached message dropped',
       messageId: 'm-1', channelId: pool.getAllChannels()[0]._id,
-      reason: 're-publish limit reached', attempts: 5, lastReason: 'nack', cause: null }]);
+      reason: 'refused too many times', refusals: 6, attempts: 5, lastReason: 'nack',
+      cause: null }]);
     assert.strictEqual(pool.msgCache.length, 0);
+  });
+
+test('six connection drops in a row do not drop the message: drops are no refusals',
+  async t => {
+    const { pool, heard, made, amqp } = await readyPool(t);
+    pool.start(10);
+    pool.publish({ n: 1 }, undefined, undefined, { messageId: 'm-1' });
+    for (let i = 0; i < 6; i++) {
+      amqp(0).emit('close');   // no channel error: the connection went
+      await tick();
+      t.mock.timers.tick(10);   // reading alive starts the re-create
+      for (let j = 0; j < 20; j++) await flush();
+      t.mock.timers.tick(10);   // the re-send
+    }
+    const sent = made.flatMap(f => f.published.map(p => p.options.messageId));
+    assert.deepStrictEqual([sent.length, new Set(sent).size, drops(heard)], [7, 1, []]);
   });
 
 test('a hand-back from a channel closed with close() is not cached, with one info', async t => {
