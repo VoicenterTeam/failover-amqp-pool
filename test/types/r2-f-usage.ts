@@ -8,7 +8,8 @@ declare const channel: AMQPPool.Channel;
 pool.on('unconfirmed', (entries) => {
     for (const entry of entries) {
         if (entry.reason === 'unsent') {
-            const none: null = entry.channelId;
+            // an 'all' copy unsent on one channel names that channel; others have none
+            const where: string | null = entry.channelId;
             const msg: string | object = entry.msg;
             if (entry.filter === 'all') {
                 pool.publish(entry.msg, entry.filter, entry.topic, entry.props);

@@ -39,6 +39,6 @@ test('types #79: each r2-f-negative.ts misuse raises its tagged error only', { s
   const { out } = compile('r2-f-negative.ts');
   const got = [...out.matchAll(/r2-f-negative\.ts\((\d+),\d+\): error (TS\d+)/g)]
     .map(m => `${m[1]} ${m[2]}`);
-  assert.strictEqual(expected.length, 5);
+  assert.strictEqual(expected.length, 6);
   assert.deepStrictEqual(got, expected, out);
 });

@@ -196,19 +196,23 @@ declare namespace AMQPPool {
     type StopEntry = (UnconfirmedEntry & { channelId: string }) | UnsentEntry;
 
     /** In stop()'s report, after the hand-backs: a message publish() cached because no channel
-     *  took it, never written to amqplib. Its msg is as publish() got it. */
+     *  took it, never written to amqplib. Its msg is as publish() got it. An 'all' message that
+     *  failed on one channel is unsent on that channel only: filter 'all' and that channel's
+     *  channelId. Published again with 'all', a channel that already took it gets it twice. */
     interface UnsentEntry {
         method: 'publish';
         msg: string | object;
         topic: string | undefined;
         props: PublishOptions | undefined;
-        /** The publish strategy it was cached with, to publish it again the same way. */
+        /** The publish strategy it was cached with: 'all', 'rr', the app's own function, or
+         *  none. Never a function of the pool's own. */
         filter?: 'rr' | 'all' | (string & {}) | PublishFilter;
         attempts: 0;
         refusals: 0;
         reason: 'unsent';
         cause: null;
-        channelId: null;
+        /** The channel an 'all' copy was unsent on; null for any other unsent message. */
+        channelId: string | null;
     }
 
     // Actually options are different for Queue, Exchange, Channel and so on...
