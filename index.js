@@ -386,9 +386,11 @@ class AMQPPool extends EventEmitter {
       const { filter, ...rest } = entry;
       return { ...rest, channelId: this.#handedBy.get(entry)._id };
     }));
+    // filter: the publish strategy ('all', 'rr', a function), so the app can publish it again
     const unsent = cached.filter(entry => !this.#handedBy.has(entry)).map(entry => ({
       method: 'publish', msg: entry.msg, topic: entry.topic, props: entry.props,
-      attempts: 0, refusals: 0, reason: 'unsent', cause: null, channelId: null
+      filter: entry.filter, attempts: 0, refusals: 0, reason: 'unsent', cause: null,
+      channelId: null
     }));
     report.push(...unsent);
     if (report.length === 0) return;

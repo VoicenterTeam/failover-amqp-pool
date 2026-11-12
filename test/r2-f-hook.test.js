@@ -305,3 +305,15 @@ test('stop(): a publish cached with no live channel is reported, and msgCache en
     assert.deepStrictEqual([heard.unconfirmed.flat().map(e => [e.props.messageId, e.reason]),
       pool.msgCache.length], [[['p-1', 'unsent']], 0]);
   });
+
+test('stop(): an \'all\' publish cached while no channel was up is reported with filter all',
+  async t => {
+    const { pool, heard, channel, amqp } = await readyPool(t, ['a'], BOTH);
+    amqp(0).emit('close');
+    channel(0).connection.alive = false;
+    pool.publish({ n: 1 }, 'all', undefined, { messageId: 'p-all' });
+    pool.publish({ n: 2 }, undefined, undefined, { messageId: 'p-first' });
+    await pool.stop({ confirmTimeout: 0 });
+    assert.deepStrictEqual(heard.unconfirmed.flat().map(e => [e.props.messageId, e.filter]),
+      [['p-all', 'all'], ['p-first', undefined]]);
+  });
