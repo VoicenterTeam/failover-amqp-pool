@@ -55,6 +55,18 @@ test('an info listener that throws after the send, no error listener: a warning'
     warned.mock.calls[0].arguments[0].message], [1, 1, 'listener bug']);
 });
 
+test('an info listener that throws a string, no error listener: the string is the warning',
+  async t => {
+    const { channel, fake } = await ready();
+    const warned = t.mock.method(process, 'emitWarning', () => {});
+    channel.on('info', i => {
+      if (i?.message === 'message published') throw 'listener string';   // not an Error
+    });
+    channel.publish({ n: 1 });
+    assert.deepStrictEqual([fake().published.length, warned.mock.calls.map(c => c.arguments[0])],
+      [1, ['listener string']]);
+  });
+
 test('an error listener that throws on the reported throw: a warning, publish() returns',
   async t => {
     const { channel, fake } = await ready();
