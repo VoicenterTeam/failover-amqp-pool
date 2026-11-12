@@ -677,18 +677,22 @@ message the pool still has, and sends none of them again. The report holds, in t
    down at shutdown), with the `channelId` of the channel that lost them;
 2. messages handed back during the wait, and those still unconfirmed when it ended (`reason:
    'timeout'`), each with its `channelId`;
-3. then, in cache order, messages `publish()` cached because no channel was up, which were
-   never sent: `reason: 'unsent'`, `channelId: null`, and `msg` as `publish()` got it.
+3. then, in cache order, messages `publish()` cached because no channel took them:
+   `reason: 'unsent'`, and `msg` as `publish()` got it. Most were never sent, with
+   `channelId: null`. An `'all'` message that failed on one channel was unsent on that channel
+   only: it has `filter: 'all'` and that channel's `channelId`.
 
 `msgCache` is empty afterwards. An `'unsent'` entry keeps the `filter` it was cached with
-(`'all'`, `'rr'`, a function, or none), so the app can publish it again with the same strategy.
+(`'all'`, `'rr'`, the app's own function, or none), so the app can publish it again with the
+same strategy. Published again with `'all'`, an `'all'` message unsent on one channel reaches
+every channel, so the channels that already took it get it twice, which at-least-once allows.
 
 ```javascript
 amqp.on('unconfirmed', (entries) => {
   // only from stop()
   for (const entry of entries) {
     if (entry.reason === 'unsent') {
-      // never sent: { method: 'publish', msg, topic, props, filter, channelId: null, ... }
+      // not sent: { method: 'publish', msg, topic, props, filter, channelId, ... }
     } else {
       // sent and not confirmed: an entry as below, plus channelId
     }
