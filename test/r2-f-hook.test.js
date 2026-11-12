@@ -187,7 +187,7 @@ test('stop() reports what is unconfirmed after confirmTimeout once, then resolve
   assert.deepStrictEqual(heard.unconfirmed.map(es => es.map(e => [e.props.messageId, e.reason,
     e.channelId])), [[['m-1', 'timeout', id], ['m-2', 'timeout', id]]]);
   assert.deepStrictEqual(heard.info.filter(i => i?.message === 'unconfirmed messages at stop'),
-    [{ message: 'unconfirmed messages at stop', count: 2 }]);
+    [{ message: 'unconfirmed messages at stop', count: 2, unsent: 0 }]);
 });
 
 test('stop() with no argument waits 5000 ms', async t => {
@@ -272,13 +272,36 @@ test('stop(): a hand-back still cached (its channel never came back) is in the o
     assert.strictEqual(pool.msgCache.length, 0);
   });
 
-test('stop(): a message cached because no channel was up stays in msgCache, unreported',
+test('stop(): never-sent cached messages are reported too, reason unsent, after the hand-backs',
   async t => {
     const { pool, heard, channel, amqp } = await readyPool(t, ['a'], BOTH);
-    amqp(0).emit('close');
-    channel(0).connection.alive = false;   // down: a publish now is cached, never written
-    pool.publish({ n: 2 }, undefined, undefined, { messageId: 'm-2' });
+    const id = channel(0)._id;
+    pool.publish({ n: 1 }, undefined, undefined, { messageId: 'm-1' });
+    amqp(0).emit('close');   // m-1 was sent: its hand-back is cached
+    await tick();
+    channel(0).connection.alive = false;   // down: these are cached, never written
+    pool.publish({ n: 2 }, undefined, undefined, { messageId: 'p-1' });
+    pool.publish({ n: 3 }, undefined, undefined, { messageId: 'p-2' });
     await pool.stop({ confirmTimeout: 0 });
-    assert.deepStrictEqual([heard.unconfirmed, pool.msgCache.map(e => e.props.messageId)],
-      [[], ['m-2']]);
+    const report = heard.unconfirmed.map(es => es.map(e =>
+      [e.props.messageId, e.reason, e.channelId]));
+    assert.deepStrictEqual(report,
+      [[['m-1', 'closed', id], ['p-1', 'unsent', null], ['p-2', 'unsent', null]]]);
+    assert.deepStrictEqual([pool.msgCache.length, heard.info.filter(i =>
+      i?.message === 'unconfirmed messages at stop')],
+      [0, [{ message: 'unconfirmed messages at stop', count: 3, unsent: 2 }]]);
+  });
+
+// the reviewer's round-4 probe: only a never-sent message cached, nothing handed back
+test('stop(): a publish cached with no live channel is reported, and msgCache ends empty',
+  async t => {
+    const { pool, heard, amqp } = await readyPool(t, ['a'], BOTH);
+    pool.start(60000);
+    amqp(0).emit('close');
+    await tick();
+    pool.publish({ n: 1 }, undefined, undefined, { messageId: 'p-1' });
+    assert.strictEqual(pool.msgCache.length, 1);
+    await pool.stop({ confirmTimeout: 0 });
+    assert.deepStrictEqual([heard.unconfirmed.flat().map(e => [e.props.messageId, e.reason]),
+      pool.msgCache.length], [[['p-1', 'unsent']], 0]);
   });

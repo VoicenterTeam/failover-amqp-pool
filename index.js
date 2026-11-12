@@ -376,22 +376,25 @@ class AMQPPool extends EventEmitter {
     await new Promise(resolve => process.nextTick(resolve));
     this.#atStop = null;
     report.push(...left.flat());
+    // Everything left in the cache is reported too, and the cache ends empty. First the
     // hand-backs still cached for a channel that never came back: written once, never
-    // confirmed, so reported too. A message cached because no channel took it was never
-    // written; it stays in msgCache.
-    const waiting = this.msgCache.filter(entry => this.#handedBy.has(entry));
-    if (waiting.length > 0) {
-      const kept = this.msgCache.filter(entry => !this.#handedBy.has(entry));
-      this.msgCache.length = 0;
-      this.msgCache.push(...kept);
-      report.unshift(...waiting.map(entry => {
-        const { filter, ...rest } = entry;
-        return { ...rest, channelId: this.#handedBy.get(entry)._id };
-      }));
-    }
+    // confirmed. Then, in cache order, the messages cached because no channel took them: never
+    // written, reason 'unsent', with no channel.
+    const cached = this.msgCache.splice(0);
+    const handedBack = cached.filter(entry => this.#handedBy.has(entry));
+    report.unshift(...handedBack.map(entry => {
+      const { filter, ...rest } = entry;
+      return { ...rest, channelId: this.#handedBy.get(entry)._id };
+    }));
+    const unsent = cached.filter(entry => !this.#handedBy.has(entry)).map(entry => ({
+      method: 'publish', msg: entry.msg, topic: entry.topic, props: entry.props,
+      attempts: 0, refusals: 0, reason: 'unsent', cause: null, channelId: null
+    }));
+    report.push(...unsent);
     if (report.length === 0) return;
-    this.#tell([['unconfirmed', report],
-      ['info', { message: 'unconfirmed messages at stop', count: report.length }]], true);
+    this.#tell([['unconfirmed', report], ['info', {
+      message: 'unconfirmed messages at stop', count: report.length, unsent: unsent.length
+    }]], true);
   }
 
   // A Channel's 'unconfirmed' entries: cached for start()'s tick, which sends each again on that
