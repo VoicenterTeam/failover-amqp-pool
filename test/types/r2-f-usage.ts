@@ -17,8 +17,12 @@ pool.on('unconfirmed', (entries) => {
         }
     }
 });
-channel.on('unconfirmed', (entries: AMQPPool.UnconfirmedEntry[]) => {
-    for (const entry of entries) channel.resend(entry);
+channel.on('unconfirmed', (entries) => {
+    for (const entry of entries) {
+        const why: 'nack' | 'closed' = entry.reason;
+        const refused: number = entry.refusals;
+        channel.resend(entry);
+    }
 });
 async function shutdown(): Promise<void> {
     const left: AMQPPool.UnconfirmedEntry[] = await channel.waitConfirmed(1000);

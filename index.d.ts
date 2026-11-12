@@ -26,7 +26,8 @@ declare class AMQPPool extends EventEmitter {
     /**
      * Stops the retry timer and removes the pool's SIGINT listener. Then it waits up to
      * `confirmTimeout` ms (default 5000) for the broker to confirm what the channels hold, and
-     * reports what is still unconfirmed once: one 'unconfirmed' event with every entry, and one
+     * reports what is still unconfirmed once, cached hand-backs included (they leave
+     * msgCache): one 'unconfirmed' event with every entry, and one
      * 'info' { message: 'unconfirmed messages at stop', count }. Then it removes the listeners
      * it added to its connections and channels, and closes every connection. The app's own
      * listeners ('info', 'error' and any other) stay, and a stopped pool emits nothing more, so
@@ -82,8 +83,9 @@ declare class AMQPPool extends EventEmitter {
     on(event: 'error', listener: (error: any) => void): this;
     /** A string or an object with a `message`. */
     on(event: 'info', listener: (info: any) => void): this;
-    /** Only from stop(): what was still unconfirmed when its wait ended, each with the id of
-     *  the channel that held it. While the pool runs, handed-back messages are re-sent. */
+    /** Only from stop(): the hand-backs still cached, those handed back during its wait, and
+     *  what was still unconfirmed when the wait ended, each with the id of the channel that
+     *  held it. While the pool runs, handed-back messages are re-sent. */
     on(event: 'unconfirmed', listener: (entries: Array<AMQPPool.StopEntry>) => void): this;
     /** Other event names. Excludes the names above so a mistyped listener for one of them is
      *  a type error, not a fallback match. */
@@ -167,6 +169,9 @@ declare namespace AMQPPool {
         msg: string;
         /** How many times the pool sent it again. */
         attempts: number;
+        /** How many times the broker refused it (a nack, or a close with a cause). The pool
+         *  drops a message refused once more after 5 re-sends; connection drops never count. */
+        refusals: number;
         /** 'nack' and 'closed' from the broker; 'timeout' from waitConfirmed(). */
         reason: 'nack' | 'closed' | 'timeout';
         /** The error the channel closed with, on every message that close hands back. null for
@@ -181,6 +186,10 @@ declare namespace AMQPPool {
         (UnconfirmedCommon & {
             method: 'sendToQueue', queue: string, props: Options.Publish | undefined
         });
+
+    /** What a Channel's 'unconfirmed' event carries: never 'timeout', which only
+     *  waitConfirmed() returns. */
+    type HandedBackEntry = UnconfirmedEntry & { reason: 'nack' | 'closed' };
 
     /** An entry in stop()'s report, with the id of the channel that held it. */
     type StopEntry = UnconfirmedEntry & { channelId: string };
@@ -357,7 +366,7 @@ declare namespace AMQPPool {
         /** A nack hands back one message; a close of the amqplib channel, all it held, in one
          *  event and in publish order. A close the channel asked for itself hands back nothing
          *  while the connection is up. Fires on the next tick. */
-        on(event: 'unconfirmed', listener: (entries: Array<UnconfirmedEntry>) => void): this;
+        on(event: 'unconfirmed', listener: (entries: Array<HandedBackEntry>) => void): this;
         on<E extends string | symbol>(
             event: E extends ChannelEvent ? never : E,
             listener: (...args: any[]) => void
