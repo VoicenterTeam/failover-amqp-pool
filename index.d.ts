@@ -375,10 +375,13 @@ declare namespace AMQPPool {
 
         /** A message delivered on a previous (closed) amqplib channel is not acked: an 'info'
          *  event { message: 'stale ack dropped', messageId, channelId, reason } is emitted
-         *  instead. */
-        ack(msg: ConsumeMessage): void;
-        /** Same stale-message rule as ack(), with message 'stale nack dropped'. */
-        nack(msg: ConsumeMessage): void;
+         *  instead.
+         *  @returns true when the ack was handed to amqplib; false when it was dropped (stale
+         *  message, dead channel, no delivery tag, or no message). */
+        ack(msg: ConsumeMessage): boolean;
+        /** Same stale-message rule as ack(), with message 'stale nack dropped'.
+         *  @returns true when the nack was handed to amqplib; false when it was dropped. */
+        nack(msg: ConsumeMessage): boolean;
 
         on(event: 'ready' | 'recreated', listener: (channel: Channel) => void): this;
         on(event: 'message' | 'channelMessage', listener: (msg: ConsumeMessage) => void): this;

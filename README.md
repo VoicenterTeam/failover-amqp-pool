@@ -13,6 +13,13 @@ A robust AMQP client with connection pooling, automatic failover, and Winston tr
 - Configurable queue and exchange settings
 - Flexible message consumption patterns
 
+## Changes in 4.1.0
+
+- `channel.ack()` and `channel.nack()` return `true` when they handed the message to amqplib and
+  `false` when they dropped it (a stale message after a re-create, a dead channel, no delivery
+  tag, or no message). The `'stale ack dropped'` event is unchanged. `amqp.ack()` and
+  `amqp.nack()` still return nothing. See [Message Acknowledgement](#message-acknowledgement).
+
 ## Changes in 4.0.x
 
 - `stop()` now ends every retry: a connection that is down or still connecting is disconnected and
@@ -348,6 +355,11 @@ amqp.nack(msg);
 channel.ack(msg);
 channel.nack(msg);
 ```
+
+`channel.ack()` and `channel.nack()` return `true` when they handed the message to amqplib,
+and `false` when they dropped it: a message from a previous channel (the `'stale ack dropped'`
+info event), a dead channel, a message without a delivery tag, or no message. `amqp.ack()` and
+`amqp.nack()` return nothing.
 
 ## Adding New Connections
 
