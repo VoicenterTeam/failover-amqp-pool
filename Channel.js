@@ -651,10 +651,11 @@ class Channel extends EventEmitter {
           queue: this.queue?.name, exchange: this.exchange?.name
         });
       }
-      else if(this.#isStale(msg, 'ack')) return;
+      else if(this.#isStale(msg, 'ack')) return false;
       else if(deliveryTag){
         this.amqpChannel.ack(msg);
         countSettled(this.connection.url, 'ack', this.#destination);
+        return true;
       }else {
         this.emit('error', {
           message: `DELIVERY TAG NOT FOUND ${messageId}`, channelId: this._id,
@@ -662,6 +663,7 @@ class Channel extends EventEmitter {
         });
       }
     }
+    return false;
   }
 
   nack(msg) {
@@ -672,8 +674,10 @@ class Channel extends EventEmitter {
       if (this.alive && deliveryTag && !this.#isStale(msg, 'nack')) {
         this.amqpChannel.nack(msg);
         countSettled(this.connection.url, 'nack', this.#destination);
+        return true;
       }
     }
+    return false;
   }
 
   // The message came on an amqplib channel that has since been replaced. Its delivery tag is

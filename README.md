@@ -349,6 +349,11 @@ channel.ack(msg);
 channel.nack(msg);
 ```
 
+`channel.ack()` and `channel.nack()` return `true` when they handed the message to amqplib,
+and `false` when they dropped it: a message from a previous channel (the `'stale ack dropped'`
+info event), a dead channel, a message without a delivery tag, or no message. `amqp.ack()` and
+`amqp.nack()` return nothing.
+
 ## Adding New Connections
 
 You can dynamically add new connections to the pool:
