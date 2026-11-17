@@ -718,8 +718,21 @@ An `'info'` event `{ message: 'unconfirmed messages at stop', count, unsent }` g
 where `unsent` counts the never-sent messages. A listener that throws is reported as a process
 warning, and `stop()` still resolves. `stop()` never waits longer than `confirmTimeout`, and
 resolves at once when nothing is in flight. A `confirmTimeout` that is not a whole number from
-0 to 2147483647 rejects with a `TypeError`, and the pool keeps running. The SIGINT stop waits
-the default 5000 ms at most.
+0 to 2147483647 rejects with a `TypeError`, and the pool keeps running.
+
+Then it closes each connection and waits up to `closeTimeout` ms (default 5000) for each close.
+amqplib's `close()` has no timeout of its own, so a broker that never answers the close would
+otherwise keep `stop()` pending forever. Past `closeTimeout` the pool destroys that
+connection's socket, removes it, and emits an `'info'` event
+`{ message: 'connection close timed out', url, closeTimeout }` for it. The connections close in
+parallel, so `stop()` takes at most `confirmTimeout + closeTimeout`. `closeTimeout` is validated
+like `confirmTimeout`, before anything stops:
+
+```javascript
+await amqp.stop({ confirmTimeout: 2000, closeTimeout: 3000 });
+```
+
+The SIGINT stop uses both defaults, so it waits 10000 ms at most.
 
 ### The Channel's side
 
