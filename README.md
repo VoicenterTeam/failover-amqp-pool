@@ -13,6 +13,13 @@ A robust AMQP client with connection pooling, automatic failover, and Winston tr
 - Configurable queue and exchange settings
 - Flexible message consumption patterns
 
+## Changes in 4.2.0
+
+- `stop()` takes a `closeTimeout` option (ms, default 5000): past it, a connection whose close
+  the broker never answers has its socket destroyed and is removed, with an `'info'` event
+  `{ message: 'connection close timed out', url, closeTimeout }`. Before, `stop()` could stay
+  pending forever. See [stop() waits for confirms](#stop-waits-for-confirms).
+
 ## Changes in 4.1.0
 
 - `channel.ack()` and `channel.nack()` return `true` when they handed the message to amqplib and
