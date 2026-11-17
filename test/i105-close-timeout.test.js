@@ -15,7 +15,8 @@ const MAX_WAIT = 2147483647;
 function attach(pool, url, close) {
   const connection = pool.connections[pool.createConnection(url, {})];
   const amqp = new EventEmitter();
-  amqp.stream = { destroyed: false, destroy() { this.destroyed = true; } };
+  amqp.stream = { destroyed: false,
+    destroy(error) { this.destroyed = true; this.destroyError = error; } };
   amqp.connection = { stream: amqp.stream };
   amqp.closeCalls = 0;
   amqp.close = () => {
@@ -57,6 +58,9 @@ test('#105 a close that never settles: stop() resolves after closeTimeout, socke
     assert.ok(took >= 45 && took < 2000, `took ${took} ms`);
     assert.strictEqual(amqp.closeCalls, 1);
     assert.strictEqual(amqp.stream.destroyed, true);
+    // with an error: amqplib tidies up (heartbeat timers) only on the socket's 'error' or 'end'
+    assert.ok(amqp.stream.destroyError instanceof Error);
+    assert.strictEqual(amqp.stream.destroyError.message, 'connection close timed out');
     assert.strictEqual(pool.connections.length, 0);
     assert.deepStrictEqual(timedOut(infos),
       [{ message: 'connection close timed out', url: 'amqp://hang.example:5672',

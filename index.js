@@ -33,12 +33,14 @@ function warn(value) {
 
 // A connection whose close() never settled (#105): its socket is destroyed. amqplib's own
 // listeners are removed first, and a no-op one keeps the socket's last 'error' from throwing.
-// The socket is amqplib's internal (ChannelModel.connection.stream); without one, nothing.
+// The socket is amqplib's internal (ChannelModel.connection.stream); without one, nothing. It is
+// destroyed with an error: amqplib tidies up (toClosed(), heartbeat timers cleared) only on the
+// socket's 'error' or 'end', and a plain destroy() emits neither.
 function abandon(amqpConnection) {
   try {
     amqpConnection?.removeAllListeners?.();
     amqpConnection?.on?.('error', () => {});
-    amqpConnection?.connection?.stream?.destroy?.();
+    amqpConnection?.connection?.stream?.destroy?.(new Error('connection close timed out'));
   } catch (error) {
     warn(error);
   }

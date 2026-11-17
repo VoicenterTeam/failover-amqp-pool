@@ -845,9 +845,10 @@ or error text is recorded.
 A pool that is not stopped is still running and is still counted, so call `stop()` on a pool you
 discard. `stop()` also removes the pool's SIGINT listener, so a stopped pool can be collected.
 `stop()` keeps the listeners your app put on the pool (`'info'`, `'error'` and any other) and
-removes only the ones the pool added itself, on its connections and channels. A stopped pool
-emits nothing more: an error during teardown, or after `stop()`, is not heard by your `'error'`
-listener and does not throw.
+removes only the ones the pool added itself, on its connections and channels. Apart from
+`stop()`'s own reports (the unconfirmed report and `'connection close timed out'`), which come
+before it resolves, a stopped pool emits nothing more: an error during teardown, or after
+`stop()`, is not heard by your `'error'` listener and does not throw.
 A stopped pool is final: `addConnection()`, `createConnection()`, `createChannel()`, `start()` and
 `publish()` throw `Error('Pool is stopped')` after `stop()`, and open, cache and send nothing.
 The error's `code` is `'POOL_STOPPED'`; match on it rather than on the message. In TypeScript the

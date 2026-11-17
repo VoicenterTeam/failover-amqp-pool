@@ -32,10 +32,11 @@ declare class AMQPPool extends EventEmitter {
      * removes the listeners it added to its connections and channels, and closes every
      * connection, waiting up to `closeTimeout` ms (default 5000) for each; past it the socket
      * is destroyed and an 'info' { message: 'connection close timed out', url, closeTimeout }
-     * emitted. The app's own listeners ('info', 'error' and any other) stay, and a stopped
-     * pool emits nothing more, so a teardown error is not heard. (A SIGINT stop gives those
-     * listeners its one 'info' or 'error'.) Takes no callback. Resolves, once each connection
-     * is closed and removed, with one entry per connection: its position when stop() began.
+     * emitted. The app's own listeners ('info', 'error' and any other) stay. Apart from these
+     * reports of stop()'s own, a stopped pool emits nothing more, so a teardown error is not
+     * heard. (A SIGINT stop gives those listeners its one 'info' or 'error'.) Takes no
+     * callback. Resolves, once each connection is closed, or abandoned past closeTimeout, and
+     * removed, with one entry per connection: its position when stop() began.
      * Rejects with a TypeError, before anything stops, for a confirmTimeout or closeTimeout
      * that is not a whole number from 0 to 2147483647.
      * A stopped pool is final: addConnection(), createConnection(), createChannel(), start() and

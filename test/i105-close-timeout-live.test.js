@@ -45,7 +45,9 @@ test('#105 live: a hung close is abandoned after closeTimeout and the socket is 
     assert.ok(broker, 'the broker lists the pool connection');
 
     const connection = pool.connections[0];
-    const stream = connection.amqpConnection.connection.stream;
+    const inner = connection.amqpConnection.connection;   // amqplib's own Connection
+    const stream = inner.stream;
+    assert.ok(inner.heartbeater, 'the broker negotiated a heartbeat');
     connection.amqpConnection.close = () => new Promise(() => {});  // the broker never answers
 
     const t0 = Date.now();
@@ -54,6 +56,11 @@ test('#105 live: a hung close is abandoned after closeTimeout and the socket is 
     assert.ok(took >= 290 && took < 5000, `took ${took} ms`);
     assert.strictEqual(stream.destroyed, true);
     assert.strictEqual(pool.connections.length, 0);
+    // amqplib ran toClosed(): its heartbeat intervals are cleared, so nothing keeps the process up
+    await new Promise(setImmediate);
+    assert.strictEqual(inner.expectSocketClose, true, 'amqplib closed the connection itself');
+    assert.strictEqual(inner.heartbeater.sendTimer._destroyed, true, 'send heartbeat cleared');
+    assert.strictEqual(inner.heartbeater.recvTimer._destroyed, true, 'recv heartbeat cleared');
     assert.strictEqual(infos.filter(i => i?.message === 'connection close timed out').length, 1);
 
     // the broker sees the socket go
