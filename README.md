@@ -13,6 +13,13 @@ A robust AMQP client with connection pooling, automatic failover, and Winston tr
 - Configurable queue and exchange settings
 - Flexible message consumption patterns
 
+## Changes in 4.2.0
+
+- `stop()` takes a `closeTimeout` option (ms, default 5000): past it, a connection whose close
+  the broker never answers has its socket destroyed and is removed, with an `'info'` event
+  `{ message: 'connection close timed out', url, closeTimeout }`. Before, `stop()` could stay
+  pending forever. See [stop() waits for confirms](#stop-waits-for-confirms).
+
 ## Changes in 4.1.0
 
 - `channel.ack()` and `channel.nack()` return `true` when they handed the message to amqplib and
@@ -718,8 +725,21 @@ An `'info'` event `{ message: 'unconfirmed messages at stop', count, unsent }` g
 where `unsent` counts the never-sent messages. A listener that throws is reported as a process
 warning, and `stop()` still resolves. `stop()` never waits longer than `confirmTimeout`, and
 resolves at once when nothing is in flight. A `confirmTimeout` that is not a whole number from
-0 to 2147483647 rejects with a `TypeError`, and the pool keeps running. The SIGINT stop waits
-the default 5000 ms at most.
+0 to 2147483647 rejects with a `TypeError`, and the pool keeps running.
+
+Then it closes each connection and waits up to `closeTimeout` ms (default 5000) for each close.
+amqplib's `close()` has no timeout of its own, so a broker that never answers the close would
+otherwise keep `stop()` pending forever. Past `closeTimeout` the pool destroys that
+connection's socket, removes it, and emits an `'info'` event
+`{ message: 'connection close timed out', url, closeTimeout }` for it. The connections close in
+parallel, so `stop()` takes at most `confirmTimeout + closeTimeout`. `closeTimeout` is validated
+like `confirmTimeout`, before anything stops:
+
+```javascript
+await amqp.stop({ confirmTimeout: 2000, closeTimeout: 3000 });
+```
+
+The SIGINT stop uses both defaults, so it waits 10000 ms at most.
 
 ### The Channel's side
 
@@ -825,9 +845,10 @@ or error text is recorded.
 A pool that is not stopped is still running and is still counted, so call `stop()` on a pool you
 discard. `stop()` also removes the pool's SIGINT listener, so a stopped pool can be collected.
 `stop()` keeps the listeners your app put on the pool (`'info'`, `'error'` and any other) and
-removes only the ones the pool added itself, on its connections and channels. A stopped pool
-emits nothing more: an error during teardown, or after `stop()`, is not heard by your `'error'`
-listener and does not throw.
+removes only the ones the pool added itself, on its connections and channels. Apart from
+`stop()`'s own reports (the unconfirmed report and `'connection close timed out'`), which come
+before it resolves, a stopped pool emits nothing more: an error during teardown, or after
+`stop()`, is not heard by your `'error'` listener and does not throw.
 A stopped pool is final: `addConnection()`, `createConnection()`, `createChannel()`, `start()` and
 `publish()` throw `Error('Pool is stopped')` after `stop()`, and open, cache and send nothing.
 The error's `code` is `'POOL_STOPPED'`; match on it rather than on the message. In TypeScript the

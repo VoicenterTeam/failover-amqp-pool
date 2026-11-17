@@ -30,12 +30,15 @@ declare class AMQPPool extends EventEmitter {
      * empties (never-sent messages as reason 'unsent'): one 'unconfirmed' event with every
      * entry, and one 'info' { message: 'unconfirmed messages at stop', count, unsent }. Then it
      * removes the listeners it added to its connections and channels, and closes every
-     * connection. The app's own listeners ('info', 'error' and any other) stay, and a stopped
-     * pool emits nothing more, so a teardown error is not heard. (A SIGINT stop gives those
-     * listeners its one 'info' or 'error'.) Takes no callback. Resolves, once each connection
-     * is closed and removed, with one entry per connection: its position when stop() began.
-     * Rejects with a TypeError, before anything stops, for a confirmTimeout that is not a
-     * whole number from 0 to 2147483647.
+     * connection, waiting up to `closeTimeout` ms (default 5000) for each; past it the socket
+     * is destroyed and an 'info' { message: 'connection close timed out', url, closeTimeout }
+     * emitted. The app's own listeners ('info', 'error' and any other) stay. Apart from these
+     * reports of stop()'s own, a stopped pool emits nothing more, so a teardown error is not
+     * heard. (A SIGINT stop gives those listeners its one 'info' or 'error'.) Takes no
+     * callback. Resolves, once each connection is closed, or abandoned past closeTimeout, and
+     * removed, with one entry per connection: its position when stop() began.
+     * Rejects with a TypeError, before anything stops, for a confirmTimeout or closeTimeout
+     * that is not a whole number from 0 to 2147483647.
      * A stopped pool is final: addConnection(), createConnection(), createChannel(), start() and
      * publish() throw a {@link AMQPPool.PoolStoppedError} after it.
      */
@@ -157,6 +160,10 @@ declare namespace AMQPPool {
     interface StopOptions {
         /** How long stop() waits for confirms, ms. Default 5000. */
         confirmTimeout?: number;
+        /** How long stop() waits for each connection's close, ms. Default 5000. Past it the
+         *  socket is destroyed, the connection removed, and an 'info' event
+         *  { message: 'connection close timed out', url, closeTimeout } emitted. */
+        closeTimeout?: number;
     }
 
     /** The channel's own error a 'closed' entry carries: 404 or 406, say. */

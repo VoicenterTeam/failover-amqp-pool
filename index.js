@@ -31,6 +31,21 @@ function warn(value) {
   }
 }
 
+// A connection whose close() never settled (#105): its socket is destroyed. amqplib's own
+// listeners are removed first, and a no-op one keeps the socket's last 'error' from throwing.
+// The socket is amqplib's internal (ChannelModel.connection.stream); without one, nothing. It is
+// destroyed with an error: amqplib tidies up (toClosed(), heartbeat timers cleared) only on the
+// socket's 'error' or 'end', and a plain destroy() emits neither.
+function abandon(amqpConnection) {
+  try {
+    amqpConnection?.removeAllListeners?.();
+    amqpConnection?.on?.('error', () => {});
+    amqpConnection?.connection?.stream?.destroy?.(new Error('connection close timed out'));
+  } catch (error) {
+    warn(error);
+  }
+}
+
 function build(pool, parsedConfig){
   let url = _buildUrl(pool.connection);
   parsedConfig[url] = (pool.hasOwnProperty(url)) ? parsedConfig[url] : {};
@@ -206,13 +221,16 @@ class AMQPPool extends EventEmitter {
   }
   
   // Waits up to confirmTimeout ms for the broker to confirm what the channels hold, then reports
-  // what is still unconfirmed once, and closes. A bad confirmTimeout rejects before anything
-  // stops.
-  async stop({ confirmTimeout = 5000 } = {}) {
-    if (!Number.isInteger(confirmTimeout) || confirmTimeout < 0 || confirmTimeout > MAX_WAIT) {
-      const got = typeof confirmTimeout === 'number' ? confirmTimeout : typeof confirmTimeout;
-      throw new TypeError('stop: confirmTimeout must be a whole number from 0 to ' +
-        `${MAX_WAIT}, got ${got}`);
+  // what is still unconfirmed once, and closes, waiting up to closeTimeout ms per connection. A
+  // bad confirmTimeout or closeTimeout rejects before anything stops.
+  async stop({ confirmTimeout = 5000, closeTimeout = 5000 } = {}) {
+    for (const [name, value] of [['confirmTimeout', confirmTimeout],
+      ['closeTimeout', closeTimeout]]) {
+      if (!Number.isInteger(value) || value < 0 || value > MAX_WAIT) {
+        const got = typeof value === 'number' ? value : typeof value;
+        throw new TypeError(`stop: ${name} must be a whole number from 0 to ${MAX_WAIT}, ` +
+          `got ${got}`);
+      }
     }
     this.#stopped = true;
     clearInterval(this.interval);
@@ -233,11 +251,22 @@ class AMQPPool extends EventEmitter {
       // a live connection is gone when it has closed, or when its close() was refused; a down
       // one, when its retries are stopped
       const live = connection.alive;
+      const amqpConnection = connection.amqpConnection;
       if (live) connection.once('close', removed);
       const closing = connection.disconnect();
       if (!live) return removed();
+      // amqplib's close() has no timeout: past closeTimeout the socket is destroyed (#105)
+      const timer = setTimeout(() => {
+        connection.off('close', removed);
+        abandon(amqpConnection);
+        this.#tell([['info', { message: 'connection close timed out', url: connection.safeUrl,
+          closeTimeout }]], true);
+        removed();
+      }, closeTimeout);
+      connection.once('close', () => clearTimeout(timer));
       closing.then(closed => {
         if (closed) return;
+        clearTimeout(timer);
         connection.off('close', removed);
         removed();
       });
